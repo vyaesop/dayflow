@@ -1,0 +1,42 @@
+# Node
+node_modules/
+dist/
+*.tsbuildinfo
+.npm/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Local database (embedded postgres data dir)
+.pgdata/
+.uploads/
+*.log
+
+# Flutter / Dart
+apps/mobile/.dart_tool/
+apps/mobile/.flutter-plugins
+apps/mobile/.flutter-plugins-dependencies
+apps/mobile/build/
+apps/mobile/.idea/
+apps/mobile/android/.gradle/
+apps/mobile/android/local.properties
+apps/mobile/ios/Pods/
+apps/mobile/ios/.symlinks/
+apps/mobile/windows/flutter/ephemeral/
+apps/mobile/linux/flutter/ephemeral/
+apps/mobile/macos/Flutter/ephemeral/
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Gradle build output
+apps/mobile/android/build/
+apps/mobile/android/app/build/

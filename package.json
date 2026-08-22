@@ -1,0 +1,24 @@
+{
+  "name": "dayflow",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Dayflow — flexible work management platform (boards, views, collaboration)",
+  "workspaces": [
+    "apps/api",
+    "packages/contracts"
+  ],
+  "scripts": {
+    "api:dev": "npm run dev -w @dayflow/api",
+    "api:build": "npm run build -w @dayflow/api",
+    "api:test": "npm run test -w @dayflow/api",
+    "db:local": "npm run db:local -w @dayflow/api",
+    "db:migrate": "npm run db:migrate -w @dayflow/api",
+    "db:generate": "npm run db:generate -w @dayflow/api",
+    "db:seed": "npm run db:seed -w @dayflow/api",
+    "lint": "npm run lint -w @dayflow/api",
+    "typecheck": "npm run typecheck -w @dayflow/api"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
