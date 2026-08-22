@@ -8,6 +8,7 @@ import { DbModule } from './db/db.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { BoardsModule } from './modules/boards/boards.module';
 import { FilesModule } from './modules/files/files.module';
+import { ItemsModule } from './modules/items/items.module';
 import { MailModule } from './modules/mail/mail.module';
 import { MembersModule } from './modules/members/members.module';
 import { RealtimeModule } from './modules/realtime/realtime.module';
@@ -31,6 +32,7 @@ import { UsersModule } from './modules/users/users.module';
     UsersModule,
     MembersModule,
     BoardsModule,
+    ItemsModule,
     FilesModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
