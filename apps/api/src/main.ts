@@ -3,7 +3,9 @@ import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
+import type { Server as HttpServer } from 'node:http';
 import { AppModule } from './app.module';
+import { RealtimeGateway } from './modules/realtime/realtime.gateway';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule);
@@ -30,6 +32,10 @@ async function bootstrap(): Promise<void> {
 
   const port = Number(process.env.PORT ?? 4000);
   await app.listen(port);
+
+  // The WebSocket server shares the HTTP listener, so it must attach after
+  // listen() has created it.
+  app.get(RealtimeGateway).attach(app.getHttpServer() as HttpServer);
 
   console.log(`Dayflow API ready on http://localhost:${port} (docs at /docs)`);
 }

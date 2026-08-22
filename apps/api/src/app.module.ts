@@ -7,6 +7,7 @@ import { validateEnv, type Env } from './config/env';
 import { DbModule } from './db/db.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { MailModule } from './modules/mail/mail.module';
+import { RealtimeModule } from './modules/realtime/realtime.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { MailModule } from './modules/mail/mail.module';
     }),
     ThrottlerModule.forRoot([{ limit: 120, ttl: 60_000 }]),
     DbModule,
+    RealtimeModule,
     MailModule,
     AuthModule,
   ],
