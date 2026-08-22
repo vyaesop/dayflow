@@ -6,6 +6,7 @@ import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { validateEnv, type Env } from './config/env';
 import { DbModule } from './db/db.module';
 import { AuthModule } from './modules/auth/auth.module';
+import { BoardsModule } from './modules/boards/boards.module';
 import { MailModule } from './modules/mail/mail.module';
 import { RealtimeModule } from './modules/realtime/realtime.module';
 
@@ -24,6 +25,7 @@ import { RealtimeModule } from './modules/realtime/realtime.module';
     RealtimeModule,
     MailModule,
     AuthModule,
+    BoardsModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })
