@@ -36,7 +36,8 @@ export interface FilePayload {
  */
 @Injectable()
 export class FilesService {
-  private readonly root = resolve(join(__dirname, '..', '..', '..', '..', '..', '.uploads'));
+  /** Override with UPLOAD_DIR where the checkout is read-only (e.g. serverless → /tmp). */
+  private readonly root = resolve(process.env.UPLOAD_DIR ?? join(__dirname, '..', '..', '..', '..', '..', '.uploads'));
 
   constructor(@Inject(DRIZZLE) private readonly db: Database) {}
 
