@@ -3,7 +3,9 @@ import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
+import { writeFileSync } from 'node:fs';
 import type { Server as HttpServer } from 'node:http';
+import { join } from 'node:path';
 import { AppModule } from './app.module';
 import { RealtimeGateway } from './modules/realtime/realtime.gateway';
 
@@ -29,6 +31,15 @@ async function bootstrap(): Promise<void> {
     .build();
   const document = SwaggerModule.createDocument(app, swaggerConfig);
   SwaggerModule.setup('docs', app, document);
+
+  if (process.env.NODE_ENV !== 'production') {
+    try {
+      const contractsDir = join(__dirname, '..', '..', '..', 'packages', 'contracts');
+      writeFileSync(join(contractsDir, 'openapi.json'), JSON.stringify(document, null, 2));
+    } catch {
+      // contracts package not present in this checkout — non-fatal
+    }
+  }
 
   const port = Number(process.env.PORT ?? 4000);
   await app.listen(port);

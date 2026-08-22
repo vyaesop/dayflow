@@ -1,0 +1,2476 @@
+{
+  "openapi": "3.0.0",
+  "paths": {
+    "/v1/auth/otp/request": {
+      "post": {
+        "operationId": "AuthController_requestOtp",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequestOtpDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Send a 6-digit verification code to an email address",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/v1/auth/otp/verify": {
+      "post": {
+        "operationId": "AuthController_verifyOtp",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyOtpDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Verify an OTP code; returns a signup token or the account picker payload",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/v1/auth/signup/complete": {
+      "post": {
+        "operationId": "AuthController_completeSignup",
+        "parameters": [
+          {
+            "name": "user-agent",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompleteSignupDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "summary": "Create the user + account after OTP verification and the onboarding wizard",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/v1/auth/login/select": {
+      "post": {
+        "operationId": "AuthController_selectAccount",
+        "parameters": [
+          {
+            "name": "user-agent",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SelectAccountDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Choose an account to log in (after OTP verify for an existing user)",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/v1/auth/login/password": {
+      "post": {
+        "operationId": "AuthController_passwordLogin",
+        "parameters": [
+          {
+            "name": "user-agent",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordLoginDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Log in with email + password",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/v1/auth/google": {
+      "post": {
+        "operationId": "AuthController_googleLogin",
+        "parameters": [
+          {
+            "name": "user-agent",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GoogleLoginDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Log in / sign up with a Google ID token",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/v1/auth/refresh": {
+      "post": {
+        "operationId": "AuthController_refresh",
+        "parameters": [
+          {
+            "name": "user-agent",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefreshDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Rotate the refresh token and mint a new access token",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/v1/auth/logout": {
+      "post": {
+        "operationId": "AuthController_logout",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefreshDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "summary": "Revoke a refresh token",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/v1/auth/switch": {
+      "post": {
+        "operationId": "AuthController_switchAccount",
+        "parameters": [
+          {
+            "name": "user-agent",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SwitchAccountDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Switch to another account the user belongs to",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/v1/auth/password/change": {
+      "post": {
+        "operationId": "AuthController_changePassword",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangePasswordDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Change password (revokes all other sessions)",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/v1/workspaces": {
+      "get": {
+        "operationId": "BoardsController_listWorkspaces",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Workspaces with their boards",
+        "tags": [
+          "boards"
+        ]
+      },
+      "post": {
+        "operationId": "BoardsController_createWorkspace",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateWorkspaceDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Create a workspace",
+        "tags": [
+          "boards"
+        ]
+      }
+    },
+    "/v1/templates": {
+      "get": {
+        "operationId": "BoardsController_listTemplates",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Board template gallery",
+        "tags": [
+          "boards"
+        ]
+      }
+    },
+    "/v1/boards/{id}": {
+      "get": {
+        "operationId": "BoardsController_getBoard",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Full board payload: columns, groups, items, values, members",
+        "tags": [
+          "boards"
+        ]
+      },
+      "patch": {
+        "operationId": "BoardsController_updateBoard",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateBoardDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Rename a board or change its description",
+        "tags": [
+          "boards"
+        ]
+      },
+      "delete": {
+        "operationId": "BoardsController_archiveBoard",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Archive a board",
+        "tags": [
+          "boards"
+        ]
+      }
+    },
+    "/v1/boards/{id}/export.csv": {
+      "get": {
+        "operationId": "BoardsController_exportCsv",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Export the board as CSV",
+        "tags": [
+          "boards"
+        ]
+      }
+    },
+    "/v1/boards/{id}/visit": {
+      "post": {
+        "operationId": "BoardsController_visit",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Record a board visit (drives Recently Visited)",
+        "tags": [
+          "boards"
+        ]
+      }
+    },
+    "/v1/boards/{id}/favorite": {
+      "post": {
+        "operationId": "BoardsController_toggleFavorite",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Toggle board favorite for the current user",
+        "tags": [
+          "boards"
+        ]
+      }
+    },
+    "/v1/boards": {
+      "post": {
+        "operationId": "BoardsController_createBoard",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateBoardDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Create a board, optionally from a template",
+        "tags": [
+          "boards"
+        ]
+      }
+    },
+    "/v1/boards/{id}/groups": {
+      "post": {
+        "operationId": "BoardsController_createGroup",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateGroupDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Add a group to a board",
+        "tags": [
+          "boards"
+        ]
+      }
+    },
+    "/v1/groups/{id}": {
+      "patch": {
+        "operationId": "BoardsController_updateGroup",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateGroupDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Rename, recolor or collapse a group",
+        "tags": [
+          "boards"
+        ]
+      },
+      "delete": {
+        "operationId": "BoardsController_deleteGroup",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Delete a group and its items",
+        "tags": [
+          "boards"
+        ]
+      }
+    },
+    "/v1/groups/{id}/move": {
+      "post": {
+        "operationId": "BoardsController_moveGroup",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MoveGroupDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Reorder a group within its board",
+        "tags": [
+          "boards"
+        ]
+      }
+    },
+    "/v1/boards/{id}/items": {
+      "post": {
+        "operationId": "BoardsController_createItem",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateItemDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Create an item in a group",
+        "tags": [
+          "boards"
+        ]
+      }
+    },
+    "/v1/items/{id}": {
+      "patch": {
+        "operationId": "BoardsController_renameItem",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenameItemDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Rename an item",
+        "tags": [
+          "boards"
+        ]
+      },
+      "delete": {
+        "operationId": "BoardsController_archiveItem",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Archive an item",
+        "tags": [
+          "boards"
+        ]
+      },
+      "get": {
+        "operationId": "ItemsController_getItem",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Item detail with cell values, updates and activity",
+        "tags": [
+          "items"
+        ]
+      }
+    },
+    "/v1/items/{id}/move": {
+      "post": {
+        "operationId": "BoardsController_moveItem",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MoveItemDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Move an item within or between groups",
+        "tags": [
+          "boards"
+        ]
+      }
+    },
+    "/v1/items/{id}/duplicate": {
+      "post": {
+        "operationId": "BoardsController_duplicateItem",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Duplicate an item with its cell values",
+        "tags": [
+          "boards"
+        ]
+      }
+    },
+    "/v1/items/{itemId}/columns/{columnId}": {
+      "put": {
+        "operationId": "BoardsController_setCellValue",
+        "parameters": [
+          {
+            "name": "itemId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "columnId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetCellValueDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Set or clear one cell value",
+        "tags": [
+          "boards"
+        ]
+      }
+    },
+    "/v1/boards/{id}/columns": {
+      "post": {
+        "operationId": "BoardsController_createColumn",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateColumnDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Add a column to a board",
+        "tags": [
+          "boards"
+        ]
+      }
+    },
+    "/v1/columns/{id}": {
+      "patch": {
+        "operationId": "BoardsController_updateColumn",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateColumnDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Rename a column or change its settings/width",
+        "tags": [
+          "boards"
+        ]
+      },
+      "delete": {
+        "operationId": "BoardsController_deleteColumn",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Delete a column and its values",
+        "tags": [
+          "boards"
+        ]
+      }
+    },
+    "/v1/me": {
+      "get": {
+        "operationId": "UsersController_me",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Current user, profile, and account memberships",
+        "tags": [
+          "me"
+        ]
+      },
+      "patch": {
+        "operationId": "UsersController_update",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateMeDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Update profile fields",
+        "tags": [
+          "me"
+        ]
+      }
+    },
+    "/v1/me/checklist": {
+      "post": {
+        "operationId": "UsersController_checklist",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChecklistDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Mark a setup-checklist step as done",
+        "tags": [
+          "me"
+        ]
+      }
+    },
+    "/v1/me/avatar": {
+      "post": {
+        "operationId": "UsersController_avatar",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Upload a profile photo",
+        "tags": [
+          "me"
+        ]
+      }
+    },
+    "/v1/me/notification-prefs": {
+      "get": {
+        "operationId": "UsersController_notificationPrefs",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Notification delivery preferences",
+        "tags": [
+          "me"
+        ]
+      },
+      "patch": {
+        "operationId": "UsersController_updateNotificationPrefs",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NotificationPrefsDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Update notification delivery preferences",
+        "tags": [
+          "me"
+        ]
+      }
+    },
+    "/v1/me/feedback": {
+      "post": {
+        "operationId": "UsersController_feedback",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FeedbackDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Send product feedback",
+        "tags": [
+          "me"
+        ]
+      }
+    },
+    "/v1/files": {
+      "post": {
+        "operationId": "FilesController_upload",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary"
+                  },
+                  "itemId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "updateId": {
+                    "type": "string",
+                    "format": "uuid"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Upload a file (multipart), optionally attached to an item or update",
+        "tags": [
+          "files"
+        ]
+      }
+    },
+    "/v1/items/{id}/files": {
+      "get": {
+        "operationId": "FilesController_listForItem",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Files attached to an item (directly or via its updates)",
+        "tags": [
+          "files"
+        ]
+      }
+    },
+    "/v1/files/{id}": {
+      "delete": {
+        "operationId": "FilesController_remove",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Delete a file (uploader or admin)",
+        "tags": [
+          "files"
+        ]
+      }
+    },
+    "/v1/files/{id}/content": {
+      "get": {
+        "operationId": "FilesController_content",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "File bytes (unauthenticated, unguessable-id access)",
+        "tags": [
+          "files"
+        ]
+      }
+    },
+    "/v1/members": {
+      "get": {
+        "operationId": "MembersController_list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Account members, plus pending invitations for admins",
+        "tags": [
+          "members"
+        ]
+      }
+    },
+    "/v1/invitations": {
+      "post": {
+        "operationId": "MembersController_invite",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InviteMemberDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Invite an email to the account (admins only)",
+        "tags": [
+          "members"
+        ]
+      }
+    },
+    "/v1/invitations/accept": {
+      "post": {
+        "operationId": "MembersController_accept",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcceptInviteDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Accept an invitation as the signed-in user",
+        "tags": [
+          "members"
+        ]
+      }
+    },
+    "/v1/invitations/{id}": {
+      "delete": {
+        "operationId": "MembersController_revoke",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Revoke a pending invitation (admins only)",
+        "tags": [
+          "members"
+        ]
+      }
+    },
+    "/v1/members/{userId}": {
+      "patch": {
+        "operationId": "MembersController_changeRole",
+        "parameters": [
+          {
+            "name": "userId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangeRoleDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Change a member's role (admins only)",
+        "tags": [
+          "members"
+        ]
+      },
+      "delete": {
+        "operationId": "MembersController_remove",
+        "parameters": [
+          {
+            "name": "userId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Remove a member from the account (admins only)",
+        "tags": [
+          "members"
+        ]
+      }
+    },
+    "/v1/my-work": {
+      "get": {
+        "operationId": "ItemsController_myWork",
+        "parameters": [
+          {
+            "name": "includeDone",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "example": "true",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Items assigned to me, bucketed by due date",
+        "tags": [
+          "items"
+        ]
+      }
+    },
+    "/v1/updates/feed": {
+      "get": {
+        "operationId": "ItemsController_feed",
+        "parameters": [
+          {
+            "name": "boardId",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "bookmarked",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "example": "true",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Company-wide update feed (top-level updates across boards)",
+        "tags": [
+          "items"
+        ]
+      }
+    },
+    "/v1/items/{id}/updates": {
+      "post": {
+        "operationId": "ItemsController_addUpdate",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddUpdateDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Post an update or a reply (notifies @mentions and the parent author)",
+        "tags": [
+          "items"
+        ]
+      }
+    },
+    "/v1/updates/{id}": {
+      "patch": {
+        "operationId": "ItemsController_editUpdate",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EditUpdateDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Edit your own update",
+        "tags": [
+          "items"
+        ]
+      },
+      "delete": {
+        "operationId": "ItemsController_deleteUpdate",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Delete an update and its replies (author or account admin)",
+        "tags": [
+          "items"
+        ]
+      }
+    },
+    "/v1/updates/{id}/like": {
+      "post": {
+        "operationId": "ItemsController_toggleLike",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Toggle your like on an update",
+        "tags": [
+          "items"
+        ]
+      }
+    },
+    "/v1/updates/{id}/bookmark": {
+      "post": {
+        "operationId": "ItemsController_toggleBookmark",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Toggle your bookmark on an update",
+        "tags": [
+          "items"
+        ]
+      }
+    },
+    "/v1/home/overview": {
+      "get": {
+        "operationId": "HomeController_overview",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Home tab payload: greeting, setup progress, favorites, recently visited",
+        "tags": [
+          "home"
+        ]
+      }
+    },
+    "/v1/search": {
+      "get": {
+        "operationId": "SearchController_run",
+        "parameters": [
+          {
+            "name": "q",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "example": "launch"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Search boards and items by name (min 2 characters)",
+        "tags": [
+          "search"
+        ]
+      }
+    },
+    "/v1/notifications": {
+      "get": {
+        "operationId": "NotificationsController_list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Notification feed for the current user and account",
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
+    "/v1/notifications/read-all": {
+      "post": {
+        "operationId": "NotificationsController_markAllRead",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Mark every unread notification as read",
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
+    "/v1/notifications/{id}/read": {
+      "post": {
+        "operationId": "NotificationsController_markRead",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Mark one notification as read",
+        "tags": [
+          "notifications"
+        ]
+      }
+    }
+  },
+  "info": {
+    "title": "Dayflow API",
+    "description": "Work management platform — boards, items, collaboration.",
+    "version": "0.1.0",
+    "contact": {}
+  },
+  "tags": [],
+  "servers": [],
+  "components": {
+    "securitySchemes": {
+      "bearer": {
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "type": "http"
+      }
+    },
+    "schemas": {
+      "RequestOtpDto": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "example": "alex@acme.com"
+          },
+          "purpose": {
+            "type": "string",
+            "enum": [
+              "signup",
+              "login"
+            ]
+          }
+        },
+        "required": [
+          "email",
+          "purpose"
+        ]
+      },
+      "VerifyOtpDto": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "example": "alex@acme.com"
+          },
+          "code": {
+            "type": "string",
+            "example": "421822",
+            "minLength": 6,
+            "maxLength": 6
+          }
+        },
+        "required": [
+          "email",
+          "code"
+        ]
+      },
+      "CompleteSignupDto": {
+        "type": "object",
+        "properties": {
+          "signupToken": {
+            "type": "string",
+            "description": "Token returned by otp/verify for a new user"
+          },
+          "fullName": {
+            "type": "string",
+            "example": "Alex Smith"
+          },
+          "password": {
+            "type": "string",
+            "minLength": 8
+          },
+          "useFor": {
+            "type": "string",
+            "enum": [
+              "work",
+              "personal",
+              "school"
+            ]
+          },
+          "manageCategory": {
+            "type": "string",
+            "example": "more_workflows"
+          },
+          "workCategory": {
+            "type": "string",
+            "example": "business_operations"
+          }
+        },
+        "required": [
+          "signupToken",
+          "fullName",
+          "password"
+        ]
+      },
+      "SelectAccountDto": {
+        "type": "object",
+        "properties": {
+          "selectToken": {
+            "type": "string",
+            "description": "Token returned by otp/verify for an existing user"
+          },
+          "accountId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "selectToken",
+          "accountId"
+        ]
+      },
+      "PasswordLoginDto": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "example": "alex@acme.com"
+          },
+          "password": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "email",
+          "password"
+        ]
+      },
+      "GoogleLoginDto": {
+        "type": "object",
+        "properties": {
+          "idToken": {
+            "type": "string",
+            "description": "Google ID token from the native Google Sign-In SDK"
+          }
+        },
+        "required": [
+          "idToken"
+        ]
+      },
+      "RefreshDto": {
+        "type": "object",
+        "properties": {
+          "refreshToken": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "refreshToken"
+        ]
+      },
+      "SwitchAccountDto": {
+        "type": "object",
+        "properties": {
+          "accountId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "accountId"
+        ]
+      },
+      "ChangePasswordDto": {
+        "type": "object",
+        "properties": {
+          "currentPassword": {
+            "type": "string"
+          },
+          "newPassword": {
+            "type": "string",
+            "minLength": 8
+          }
+        },
+        "required": [
+          "currentPassword",
+          "newPassword"
+        ]
+      },
+      "CreateWorkspaceDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "Marketing"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "CreateBoardDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "Campaign tracker"
+          },
+          "workspaceId": {
+            "type": "string",
+            "description": "Defaults to the oldest workspace in the account"
+          },
+          "description": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "main",
+              "shareable",
+              "private"
+            ]
+          },
+          "template": {
+            "type": "string",
+            "description": "Template key from GET /v1/templates"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "UpdateBoardDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          }
+        }
+      },
+      "CreateGroupDto": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "example": "In progress"
+          },
+          "color": {
+            "type": "string",
+            "enum": [
+              "blue",
+              "purple",
+              "green",
+              "pink",
+              "amber",
+              "red",
+              "teal",
+              "indigo"
+            ]
+          }
+        },
+        "required": [
+          "title"
+        ]
+      },
+      "UpdateGroupDto": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "color": {
+            "type": "string",
+            "enum": [
+              "blue",
+              "purple",
+              "green",
+              "pink",
+              "amber",
+              "red",
+              "teal",
+              "indigo"
+            ]
+          },
+          "collapsed": {
+            "type": "boolean"
+          }
+        }
+      },
+      "MoveGroupDto": {
+        "type": "object",
+        "properties": {
+          "afterGroupId": {
+            "type": "object",
+            "nullable": true,
+            "description": "Place after this group; null moves it first"
+          }
+        }
+      },
+      "CreateItemDto": {
+        "type": "object",
+        "properties": {
+          "groupId": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "example": "Draft the launch plan"
+          },
+          "afterItemId": {
+            "type": "object",
+            "nullable": true,
+            "description": "Place after this item; null puts it first; omit to append"
+          }
+        },
+        "required": [
+          "groupId",
+          "name"
+        ]
+      },
+      "RenameItemDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "MoveItemDto": {
+        "type": "object",
+        "properties": {
+          "groupId": {
+            "type": "string",
+            "description": "Target group; omit to reorder within the current group"
+          },
+          "afterItemId": {
+            "type": "object",
+            "nullable": true,
+            "description": "Place after this item; null moves it first"
+          }
+        }
+      },
+      "SetCellValueDto": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "object",
+            "nullable": true,
+            "description": "Shape depends on the column type: {labelId} for status, {userIds:[]} for people, {date,time?} for date, {text} for text, {number} for number, {checked} for checkbox. Send null to clear the cell.",
+            "example": {
+              "labelId": "done"
+            }
+          }
+        },
+        "required": [
+          "value"
+        ]
+      },
+      "CreateColumnDto": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "status",
+              "people",
+              "date",
+              "text",
+              "number",
+              "tags",
+              "dropdown",
+              "checkbox",
+              "timeline",
+              "vote",
+              "location",
+              "link"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "example": "Owner"
+          },
+          "settings": {
+            "type": "object",
+            "description": "Type-specific settings; sensible defaults are applied when omitted"
+          }
+        },
+        "required": [
+          "type",
+          "title"
+        ]
+      },
+      "UpdateColumnDto": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "settings": {
+            "type": "object"
+          },
+          "width": {
+            "type": "number",
+            "minimum": 60
+          }
+        }
+      },
+      "UpdateMeDto": {
+        "type": "object",
+        "properties": {
+          "fullName": {
+            "type": "string",
+            "example": "Alex Smith"
+          },
+          "language": {
+            "type": "string",
+            "example": "en"
+          },
+          "personalStatus": {
+            "type": "string",
+            "enum": [
+              "working_from_home",
+              "out_sick",
+              "on_break",
+              "out_of_office",
+              "working_outside",
+              "family_time",
+              "do_not_disturb"
+            ],
+            "nullable": true
+          }
+        }
+      },
+      "ChecklistDto": {
+        "type": "object",
+        "properties": {
+          "step": {
+            "type": "string",
+            "example": "get_started_basics"
+          }
+        },
+        "required": [
+          "step"
+        ]
+      },
+      "NotificationPrefsDto": {
+        "type": "object",
+        "properties": {
+          "emailEnabled": {
+            "type": "boolean"
+          },
+          "pushEnabled": {
+            "type": "boolean"
+          }
+        }
+      },
+      "FeedbackDto": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string",
+            "example": "There's a bug on the home screen"
+          }
+        },
+        "required": [
+          "message"
+        ]
+      },
+      "InviteMemberDto": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "example": "teammate@acme.com"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "admin",
+              "member",
+              "viewer"
+            ],
+            "default": "member"
+          }
+        },
+        "required": [
+          "email"
+        ]
+      },
+      "AcceptInviteDto": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "Token from the invitation link"
+          }
+        },
+        "required": [
+          "token"
+        ]
+      },
+      "ChangeRoleDto": {
+        "type": "object",
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": [
+              "admin",
+              "member",
+              "viewer"
+            ]
+          }
+        },
+        "required": [
+          "role"
+        ]
+      },
+      "AddUpdateDto": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "string",
+            "example": "Kicked this off — @Alex Smith can you review?"
+          },
+          "parentId": {
+            "type": "string",
+            "description": "Reply to this top-level update"
+          }
+        },
+        "required": [
+          "body"
+        ]
+      },
+      "EditUpdateDto": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "body"
+        ]
+      }
+    }
+  }
+}
