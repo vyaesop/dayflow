@@ -160,7 +160,8 @@ const GALLERY: Array<{
 ];
 
 async function main(): Promise<void> {
-  const url = process.env.DATABASE_URL ?? 'postgres://dayflow:dayflow@127.0.0.1:5433/dayflow';
+  const url =
+    process.env.DB_LIVE_URL ?? process.env.DATABASE_URL ?? 'postgres://dayflow:dayflow@127.0.0.1:5433/dayflow';
   const pool = new Pool({ connectionString: url, max: 1 });
   const db = drizzle(pool);
 

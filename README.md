@@ -38,6 +38,10 @@ npm run db:migrate            # apply schema (separate terminal)
 Docker or a hosted Postgres, `docker compose up -d` starts one on :5432 — point
 `DATABASE_URL` in `apps/api/.env` at whichever you choose.
 
+To run against a hosted database (e.g. Neon), set `DB_LIVE_URL` in
+`apps/api/.env` to the pooled connection string — the API, migrations, and
+seeds all prefer it over `DATABASE_URL` when it is set.
+
 **2. API**
 
 ```bash

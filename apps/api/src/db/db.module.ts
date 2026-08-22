@@ -23,7 +23,8 @@ function isNeonUrl(url: string): boolean {
       provide: DRIZZLE,
       inject: [ConfigService],
       useFactory: (config: ConfigService<Env, true>): Database => {
-        const url = config.get('DATABASE_URL', { infer: true });
+        const liveUrl: string | undefined = config.get('DB_LIVE_URL', { infer: true });
+        const url = liveUrl ?? config.getOrThrow('DATABASE_URL', { infer: true });
         if (isNeonUrl(url)) {
           neonConfig.webSocketConstructor = ws;
           const pool = new NeonPool({ connectionString: url });

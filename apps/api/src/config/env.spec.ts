@@ -36,6 +36,13 @@ describe('validateEnv', () => {
     expect(() => validateEnv({ JWT_SECRET: minimal.JWT_SECRET })).toThrow(/DATABASE_URL/);
   });
 
+  it('accepts an optional hosted database url', () => {
+    const hosted = 'postgresql://user:pass@ep-example-pooler.us-east-1.aws.neon.tech/db?sslmode=require';
+
+    expect(validateEnv(minimal).DB_LIVE_URL).toBeUndefined();
+    expect(validateEnv({ ...minimal, DB_LIVE_URL: hosted }).DB_LIVE_URL).toBe(hosted);
+  });
+
   it('rejects a jwt secret that is too short to be safe', () => {
     expect(() => validateEnv({ ...minimal, JWT_SECRET: 'short' })).toThrow(/JWT_SECRET/);
   });
