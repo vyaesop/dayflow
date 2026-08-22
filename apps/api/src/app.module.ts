@@ -8,6 +8,7 @@ import { DbModule } from './db/db.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { BoardsModule } from './modules/boards/boards.module';
 import { MailModule } from './modules/mail/mail.module';
+import { MembersModule } from './modules/members/members.module';
 import { RealtimeModule } from './modules/realtime/realtime.module';
 
 @Module({
@@ -25,6 +26,7 @@ import { RealtimeModule } from './modules/realtime/realtime.module';
     RealtimeModule,
     MailModule,
     AuthModule,
+    MembersModule,
     BoardsModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
