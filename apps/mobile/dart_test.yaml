@@ -1,0 +1,6 @@
+# Tags used by the test suite.
+#   flutter test --exclude-tags e2e   # unit + widget only, no server needed
+#   flutter test --tags e2e           # only the live-API suite
+tags:
+  e2e:
+    description: Requires a live API on localhost:4000 (skips itself when absent).
