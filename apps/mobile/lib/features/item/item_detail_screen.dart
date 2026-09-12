@@ -16,6 +16,7 @@ import '../board/board_controller.dart';
 import '../board/cell_editors.dart';
 import '../members/members_providers.dart';
 import 'item_repository.dart';
+import 'rich_composer.dart';
 import 'update_card.dart';
 
 export 'update_card.dart' show relativeTime;
@@ -28,7 +29,17 @@ final itemFilesProvider = FutureProvider.autoDispose.family<List<AppFile>, Strin
   return ref.read(itemRepositoryProvider).filesForItem(itemId);
 });
 
-/// Item card, matching the design's Columns / Updates / Files tabs.
+/// The signed-in user's id, or null while signed out.
+String? _meUserId(WidgetRef ref) {
+  final auth = ref.read(authControllerProvider);
+  return auth is SignedIn ? auth.me.id : null;
+}
+
+void _toastError(BuildContext context, ApiException e) {
+  if (context.mounted) showDfToast(context, e.message, icon: Icons.error_outline_rounded);
+}
+
+/// Item card: Columns / Updates / Files tabs, plus Subitems for top-level items.
 class ItemDetailScreen extends ConsumerStatefulWidget {
   const ItemDetailScreen({super.key, required this.itemId});
 
@@ -38,19 +49,13 @@ class ItemDetailScreen extends ConsumerStatefulWidget {
   ConsumerState<ItemDetailScreen> createState() => _ItemDetailScreenState();
 }
 
-class _ItemDetailScreenState extends ConsumerState<ItemDetailScreen> with SingleTickerProviderStateMixin {
-  late final TabController _tabs = TabController(length: 3, vsync: this);
-
-  @override
-  void dispose() {
-    _tabs.dispose();
-    super.dispose();
-  }
-
+class _ItemDetailScreenState extends ConsumerState<ItemDetailScreen> {
   void _reload() {
     ref.invalidate(itemDetailProvider(widget.itemId));
     ref.invalidate(itemFilesProvider(widget.itemId));
   }
+
+  void _reloadBoard(ItemDetail item) => ref.invalidate(boardControllerProvider(item.boardId));
 
   Future<void> _rename(ItemDetail item) async {
     final name = await promptForText(context, title: 'Rename item', initial: item.name);
@@ -58,82 +63,187 @@ class _ItemDetailScreenState extends ConsumerState<ItemDetailScreen> with Single
     try {
       await ref.read(boardRepositoryProvider).renameItem(item.id, name);
       _reload();
-      ref.invalidate(boardControllerProvider(item.boardId));
+      _reloadBoard(item);
     } on ApiException catch (e) {
-      if (mounted) showDfToast(context, e.message, icon: Icons.error_outline_rounded);
+      if (mounted) _toastError(context, e);
     }
+  }
+
+  Future<void> _archive(ItemDetail item) async {
+    try {
+      await ref.read(boardRepositoryProvider).archiveItem(item.id);
+      _reloadBoard(item);
+      if (!mounted) return;
+      showDfToast(context, 'Archived "${item.name}"', icon: Icons.archive_outlined);
+      context.pop();
+    } on ApiException catch (e) {
+      if (mounted) _toastError(context, e);
+    }
+  }
+
+  Future<void> _trash(ItemDetail item) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('Delete "${item.name}"?', style: Theme.of(dialogContext).textTheme.titleMedium),
+        content: Text(
+          item.subitems.isEmpty
+              ? 'It moves to the trash and is deleted for good after 30 days unless you restore it.'
+              : 'It and its ${item.subitems.length} subitem${item.subitems.length == 1 ? '' : 's'} move to the '
+                  'trash and are deleted for good after 30 days unless you restore them.',
+          style: Theme.of(dialogContext).textTheme.bodyMedium,
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Delete', style: TextStyle(color: DfColors.danger)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    try {
+      await ref.read(boardRepositoryProvider).trashItem(item.id);
+      _reloadBoard(item);
+      if (!mounted) return;
+      showDfToast(context, 'Moved "${item.name}" to the trash', icon: Icons.delete_outline_rounded);
+      context.pop();
+    } on ApiException catch (e) {
+      if (mounted) _toastError(context, e);
+    }
+  }
+
+  String _metaLine(ItemDetail item) {
+    final parts = <String>[];
+    if (item.serial > 0) parts.add('#${item.serial}');
+    if (item.createdAt != null) parts.add('created ${relativeTime(item.createdAt!)}');
+    if (item.groupTitle.isNotEmpty) parts.add(item.groupTitle);
+    return parts.isEmpty ? item.boardName : parts.join(' · ');
   }
 
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(itemDetailProvider(widget.itemId));
+    final item = state.valueOrNull;
     final text = Theme.of(context).textTheme;
+    final showSubitems = item != null && !item.isSubitem;
 
-    return Scaffold(
-      appBar: AppBar(
-        leading: BackButton(onPressed: () => context.pop()),
-        centerTitle: false,
-        titleSpacing: 0,
-        title: state.maybeWhen(
-          data: (item) => Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Text(item.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-              Text('${item.boardName} › ${item.groupTitle}', style: text.labelSmall),
-            ],
-          ),
-          orElse: () => const Text('Item'),
-        ),
-        actions: [
-          ...state.maybeWhen(
-            data: (item) => [
-              IconButton(
-                icon: const Icon(Icons.edit_outlined),
-                tooltip: 'Rename',
-                onPressed: () => _rename(item),
-              ),
+    return DefaultTabController(
+      length: showSubitems ? 4 : 3,
+      child: Scaffold(
+        appBar: AppBar(
+          leading: BackButton(onPressed: () => context.pop()),
+          centerTitle: false,
+          titleSpacing: 0,
+          title: item == null
+              ? const Text('Item')
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(item.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+                    Text(_metaLine(item), maxLines: 1, overflow: TextOverflow.ellipsis, style: text.labelSmall),
+                  ],
+                ),
+          actions: [
+            if (item != null) ...[
               IconButton(
                 icon: const Icon(Icons.dashboard_outlined),
                 tooltip: 'Open board',
                 onPressed: () => context.pushReplacement('/boards/${item.boardId}'),
               ),
+              if (item.canEdit)
+                PopupMenuButton<String>(
+                  tooltip: 'More',
+                  onSelected: (action) => switch (action) {
+                    'rename' => _rename(item),
+                    'archive' => _archive(item),
+                    _ => _trash(item),
+                  },
+                  itemBuilder: (context) => const [
+                    PopupMenuItem(value: 'rename', child: Text('Rename')),
+                    PopupMenuItem(value: 'archive', child: Text('Archive')),
+                    PopupMenuItem(value: 'trash', child: Text('Delete', style: TextStyle(color: DfColors.danger))),
+                  ],
+                ),
             ],
-            orElse: () => const <Widget>[],
-          ),
-        ],
-        bottom: TabBar(
-          controller: _tabs,
-          labelColor: DfColors.primary,
-          indicatorColor: DfColors.primary,
-          tabs: [
-            const Tab(text: 'Columns'),
-            Tab(text: state.maybeWhen(data: (i) => 'Updates (${i.updates.length})', orElse: () => 'Updates')),
-            const Tab(text: 'Files'),
           ],
+          bottom: TabBar(
+            labelColor: DfColors.primary,
+            indicatorColor: DfColors.primary,
+            isScrollable: showSubitems,
+            tabAlignment: showSubitems ? TabAlignment.start : null,
+            tabs: [
+              const Tab(text: 'Columns'),
+              Tab(text: item == null ? 'Updates' : 'Updates (${item.updates.length})'),
+              const Tab(text: 'Files'),
+              if (showSubitems) Tab(text: 'Subitems (${item.subitems.length})'),
+            ],
+          ),
+        ),
+        body: state.when(
+          loading: () => const Center(child: CircularProgressIndicator()),
+          error: (error, _) => Center(
+            child: Padding(
+              padding: const EdgeInsets.all(DfSpacing.xl),
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                const Icon(Icons.cloud_off_rounded, size: 30, color: DfColors.textTertiary),
+                const SizedBox(height: DfSpacing.sm),
+                Text('$error', textAlign: TextAlign.center, style: text.bodySmall),
+                const SizedBox(height: DfSpacing.md),
+                DfButton(label: 'Try again', variant: DfButtonVariant.tonal, expand: false, onPressed: _reload),
+              ]),
+            ),
+          ),
+          data: (item) => Column(children: [
+            if (item.isSubitem) _ParentBreadcrumb(item: item),
+            Expanded(
+              child: TabBarView(
+                children: [
+                  _ColumnsTab(item: item, onChanged: _reload),
+                  _UpdatesTab(item: item, onChanged: _reload),
+                  _FilesTab(item: item, onChanged: _reload),
+                  if (!item.isSubitem) _SubitemsTab(item: item, onChanged: _reload),
+                ],
+              ),
+            ),
+          ]),
         ),
       ),
-      body: state.when(
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (error, _) => Center(
-          child: Padding(
-            padding: const EdgeInsets.all(DfSpacing.xl),
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              const Icon(Icons.cloud_off_rounded, size: 30, color: DfColors.textTertiary),
-              const SizedBox(height: DfSpacing.sm),
-              Text('$error', textAlign: TextAlign.center, style: text.bodySmall),
-              const SizedBox(height: DfSpacing.md),
-              DfButton(label: 'Try again', variant: DfButtonVariant.tonal, expand: false, onPressed: _reload),
-            ]),
-          ),
-        ),
-        data: (item) => TabBarView(
-          controller: _tabs,
-          children: [
-            _ColumnsTab(item: item, onChanged: _reload),
-            _UpdatesTab(item: item, onChanged: _reload),
-            _FilesTab(itemId: item.id, onChanged: _reload),
-          ],
+    );
+  }
+}
+
+/// `↑ in <parent>` row shown on subitems; tap opens the parent item.
+class _ParentBreadcrumb extends StatelessWidget {
+  const _ParentBreadcrumb({required this.item});
+
+  final ItemDetail item;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final text = Theme.of(context).textTheme;
+    return Material(
+      color: isDark ? DfColors.surfaceAltDark : DfColors.primarySubtle,
+      child: InkWell(
+        onTap: () => context.push('/items/${item.parentId}'),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: DfSpacing.md, vertical: DfSpacing.xs),
+          child: Row(children: [
+            const Icon(Icons.arrow_upward_rounded, size: 16, color: DfColors.primary),
+            const SizedBox(width: DfSpacing.xs),
+            Expanded(
+              child: Text(
+                'in ${item.parentName ?? 'parent item'}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: text.labelMedium?.copyWith(color: DfColors.primary),
+              ),
+            ),
+            const Icon(Icons.chevron_right_rounded, size: 18, color: DfColors.primary),
+          ]),
         ),
       ),
     );
@@ -149,9 +259,8 @@ class _ColumnsTab extends ConsumerWidget {
   final VoidCallback onChanged;
 
   Future<void> _editCell(BuildContext context, WidgetRef ref, BoardColumn column) async {
-    final assignable = await ref
-        .read(assignableMembersProvider.future)
-        .catchError((Object _) => const <BoardMember>[]);
+    final assignable =
+        await ref.read(assignableMembersProvider.future).catchError((Object _) => const <BoardMember>[]);
     if (!context.mounted) return;
 
     final result = await editCell(
@@ -159,75 +268,126 @@ class _ColumnsTab extends ConsumerWidget {
       column: column,
       item: item.asBoardItem,
       members: assignable,
+      meUserId: _meUserId(ref),
+      files: ref.read(itemRepositoryProvider),
     );
-    if (!result.changed || !context.mounted) return;
+    if (!context.mounted) return;
+    if (result.refresh) {
+      onChanged();
+      ref.invalidate(boardControllerProvider(item.boardId));
+    }
+    if (!result.changed) return;
     try {
-      await ref.read(boardRepositoryProvider).setCellValue(
-            itemId: item.id,
-            columnId: column.id,
-            value: result.value,
-          );
+      await ref.read(boardRepositoryProvider).setCellValue(itemId: item.id, columnId: column.id, value: result.value);
       onChanged();
       ref.invalidate(boardControllerProvider(item.boardId));
     } on ApiException catch (e) {
-      if (context.mounted) showDfToast(context, e.message, icon: Icons.error_outline_rounded);
+      if (context.mounted) _toastError(context, e);
     }
   }
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final text = Theme.of(context).textTheme;
+    final members = ref.watch(assignableMembersProvider).valueOrNull ?? const <BoardMember>[];
+    final boardItem = item.asBoardItem;
+
     return ListView(
       padding: const EdgeInsets.all(DfSpacing.md),
       children: [
         for (final (index, column) in item.columns.indexed)
-          Padding(
-            padding: const EdgeInsets.only(bottom: DfSpacing.xs),
-            child: DfCard(
-              padding: const EdgeInsets.symmetric(horizontal: DfSpacing.md, vertical: DfSpacing.sm),
-              onTap: () => _editCell(context, ref, column),
-              child: Row(children: [
-                Expanded(flex: 2, child: Text(column.title, style: text.labelMedium)),
-                Expanded(
-                  flex: 3,
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: cellChip(context, column, item.asBoardItem, const []) ??
-                        Text(
-                          'Set ${column.title.toLowerCase()}',
-                          style: text.bodySmall?.copyWith(color: DfColors.textTertiary),
-                        ),
+          Builder(builder: (context) {
+            final editable = item.canEdit && !column.isReadOnly;
+            return Padding(
+              padding: const EdgeInsets.only(bottom: DfSpacing.xs),
+              child: DfCard(
+                padding: const EdgeInsets.symmetric(horizontal: DfSpacing.md, vertical: DfSpacing.sm),
+                onTap: editable ? () => _editCell(context, ref, column) : null,
+                child: Row(children: [
+                  Expanded(
+                    flex: 2,
+                    child: Row(children: [
+                      Flexible(child: Text(column.title, style: text.labelMedium, overflow: TextOverflow.ellipsis)),
+                      if (column.isReadOnly) ...[
+                        const SizedBox(width: DfSpacing.xxs),
+                        const Icon(Icons.lock_outline_rounded, size: 12, color: DfColors.textTertiary),
+                      ],
+                    ]),
                   ),
-                ),
-                const Icon(Icons.chevron_right_rounded, size: 18, color: DfColors.textTertiary),
-              ]),
-            ),
-          )
-              .animate(delay: DfMotion.staggerStep * index)
-              .fadeIn(duration: DfMotion.expressiveShort, curve: DfMotion.enter)
-              .slideY(begin: 0.08, end: 0, duration: DfMotion.expressiveShort, curve: DfMotion.enter),
+                  Expanded(
+                    flex: 3,
+                    child: Align(
+                      alignment: Alignment.centerLeft,
+                      child: cellChip(context, column, boardItem, members) ??
+                          Text(
+                            editable ? 'Set ${column.title.toLowerCase()}' : '—',
+                            style: text.bodySmall?.copyWith(color: DfColors.textTertiary),
+                          ),
+                    ),
+                  ),
+                  if (editable) const Icon(Icons.chevron_right_rounded, size: 18, color: DfColors.textTertiary),
+                ]),
+              ),
+            )
+                .animate(delay: DfMotion.staggerStep * index)
+                .fadeIn(duration: DfMotion.expressiveShort, curve: DfMotion.enter)
+                .slideY(begin: 0.08, end: 0, duration: DfMotion.expressiveShort, curve: DfMotion.enter);
+          }),
         const SizedBox(height: DfSpacing.md),
         // Activity lives under Columns, as secondary context.
         if (item.activity.isNotEmpty) ...[
           Text('Activity', style: text.labelMedium),
           const SizedBox(height: DfSpacing.xs),
-          for (final entry in item.activity.take(15))
-            Padding(
-              padding: const EdgeInsets.only(bottom: DfSpacing.sm),
-              child: Row(children: [
-                DfAvatar(name: entry.actorName ?? '?', seed: entry.actorName ?? entry.id, size: 24),
-                const SizedBox(width: DfSpacing.xs),
-                Expanded(
-                  child: Text.rich(TextSpan(children: [
-                    TextSpan(text: entry.actorName ?? 'Someone', style: text.titleSmall),
-                    TextSpan(text: ' ${entry.description}', style: text.bodySmall),
-                  ])),
-                ),
-                Text(relativeTime(entry.createdAt), style: text.labelSmall),
-              ]),
-            ),
+          for (final entry in item.activity.take(15)) _ActivityRow(entry: entry),
         ],
       ],
+    );
+  }
+}
+
+class _ActivityRow extends StatelessWidget {
+  const _ActivityRow({required this.entry});
+
+  final ActivityEntry entry;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = Theme.of(context).textTheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final undone = entry.isUndone;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: DfSpacing.sm),
+      child: Row(children: [
+        DfAvatar(
+          name: entry.actorName ?? '?',
+          seed: entry.actorId ?? entry.actorName ?? entry.id,
+          imageUrl: entry.actorAvatarUrl,
+          size: 24,
+        ),
+        const SizedBox(width: DfSpacing.xs),
+        Expanded(
+          child: Text.rich(
+            TextSpan(children: [
+              TextSpan(text: entry.actorName ?? 'Someone', style: text.titleSmall),
+              TextSpan(text: ' ${entry.description}', style: text.bodySmall),
+            ]),
+            style: undone ? const TextStyle(decoration: TextDecoration.lineThrough) : null,
+          ),
+        ),
+        if (undone) ...[
+          const SizedBox(width: DfSpacing.xs),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            decoration: BoxDecoration(
+              color: isDark ? DfColors.surfaceAltDark : DfColors.surfaceAlt,
+              borderRadius: BorderRadius.circular(DfRadius.sm),
+            ),
+            child: Text('undone', style: text.labelSmall?.copyWith(color: DfColors.textTertiary)),
+          ),
+        ],
+        const SizedBox(width: DfSpacing.xs),
+        Text(relativeTime(entry.createdAt), style: text.labelSmall),
+      ]),
     );
   }
 }
@@ -245,55 +405,27 @@ class _UpdatesTab extends ConsumerStatefulWidget {
 }
 
 class _UpdatesTabState extends ConsumerState<_UpdatesTab> {
-  final _composer = TextEditingController();
   final _composerFocus = FocusNode();
-  bool _posting = false;
 
   /// When set, the composer posts a reply to this update.
   ItemUpdate? _replyTo;
 
   @override
   void dispose() {
-    _composer.dispose();
     _composerFocus.dispose();
     super.dispose();
   }
 
-  Future<void> _post() async {
-    final body = _composer.text.trim();
-    if (body.isEmpty) return;
-    setState(() => _posting = true);
-    try {
-      await ref.read(itemRepositoryProvider).postUpdate(
-            itemId: widget.item.id,
-            body: body,
-            parentId: _replyTo?.id,
-          );
-      _composer.clear();
-      setState(() => _replyTo = null);
-      widget.onChanged();
-    } on ApiException catch (e) {
-      if (mounted) showDfToast(context, e.message, icon: Icons.error_outline_rounded);
-    } finally {
-      if (mounted) setState(() => _posting = false);
+  Future<void> _post(String markdown, List<PlatformFile> attachments) async {
+    final repo = ref.read(itemRepositoryProvider);
+    final created = await repo.postUpdate(itemId: widget.item.id, body: markdown, parentId: _replyTo?.id);
+    for (final file in attachments) {
+      final bytes = file.bytes;
+      if (bytes == null) continue;
+      await repo.uploadFile(bytes: bytes, filename: file.name, updateId: created.id);
     }
-  }
-
-  Future<void> _attach() async {
-    final picked = await FilePicker.platform.pickFiles(withData: true);
-    final file = picked?.files.firstOrNull;
-    if (file == null || file.bytes == null || !mounted) return;
-    try {
-      await ref.read(itemRepositoryProvider).uploadFile(
-            bytes: file.bytes!,
-            filename: file.name,
-            itemId: widget.item.id,
-          );
-      widget.onChanged();
-      if (mounted) showDfToast(context, 'Attached ${file.name}');
-    } on ApiException catch (e) {
-      if (mounted) showDfToast(context, e.message, icon: Icons.error_outline_rounded);
-    }
+    if (mounted) setState(() => _replyTo = null);
+    widget.onChanged();
   }
 
   @override
@@ -301,7 +433,10 @@ class _UpdatesTabState extends ConsumerState<_UpdatesTab> {
     final auth = ref.watch(authControllerProvider);
     final me = auth is SignedIn ? auth.me : null;
     final updates = widget.item.updates;
+    final canEdit = widget.item.canEdit;
     final text = Theme.of(context).textTheme;
+
+    bool canModify(ItemUpdate u) => u.authorId == me?.id || me?.account.role == 'admin';
 
     return Column(children: [
       Expanded(
@@ -337,83 +472,33 @@ class _UpdatesTabState extends ConsumerState<_UpdatesTab> {
                     UpdateCard(
                       key: ValueKey(update.id),
                       update: update,
-                      canModify: update.authorId == me?.id || me?.account.role == 'admin',
+                      canModify: canModify(update),
+                      canModifyReply: canModify,
                       onChanged: widget.onChanged,
-                      onReply: () {
-                        setState(() => _replyTo = update);
-                        _composerFocus.requestFocus();
-                      },
+                      onReply: canEdit
+                          ? () {
+                              setState(() => _replyTo = update);
+                              _composerFocus.requestFocus();
+                            }
+                          : null,
                     )
-                        .animate(delay: DfMotion.staggerStep * index)
+                        .animate(delay: DfMotion.staggerStep * (index.clamp(0, 8)))
                         .fadeIn(duration: DfMotion.expressiveShort, curve: DfMotion.enter)
                         .slideY(begin: 0.06, end: 0, duration: DfMotion.expressiveShort, curve: DfMotion.enter),
                 ],
               ),
       ),
-      SafeArea(
-        top: false,
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          if (_replyTo != null)
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(horizontal: DfSpacing.md, vertical: DfSpacing.xs),
-              color: Theme.of(context).brightness == Brightness.dark
-                  ? DfColors.surfaceAltDark
-                  : DfColors.primarySubtle,
-              child: Row(children: [
-                const Icon(Icons.reply_rounded, size: 16, color: DfColors.primary),
-                const SizedBox(width: DfSpacing.xs),
-                Expanded(
-                  child: Text(
-                    'Replying to ${_replyTo!.authorName}',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: text.labelMedium,
-                  ),
-                ),
-                IconButton(
-                  visualDensity: VisualDensity.compact,
-                  icon: const Icon(Icons.close_rounded, size: 16),
-                  onPressed: () => setState(() => _replyTo = null),
-                ),
-              ]),
-            ),
-          Padding(
-            padding: const EdgeInsets.all(DfSpacing.sm),
-            child: Row(children: [
-              IconButton(
-                icon: const Icon(Icons.attach_file_rounded, color: DfColors.textSecondary),
-                tooltip: 'Attach a file',
-                onPressed: _attach,
-              ),
-              Expanded(
-                child: TextField(
-                  controller: _composer,
-                  focusNode: _composerFocus,
-                  minLines: 1,
-                  maxLines: 4,
-                  textInputAction: TextInputAction.newline,
-                  decoration: InputDecoration(
-                    hintText: _replyTo == null ? 'Write an update… (@name to mention)' : 'Write a reply…',
-                  ),
-                ),
-              ),
-              const SizedBox(width: DfSpacing.xs),
-              IconButton.filled(
-                onPressed: _posting ? null : _post,
-                icon: _posting
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                      )
-                    : const Icon(Icons.send_rounded, size: 20),
-                tooltip: 'Post',
-              ),
-            ]),
+      if (canEdit)
+        SafeArea(
+          top: false,
+          child: RichComposer(
+            focusNode: _composerFocus,
+            hintText: _replyTo == null ? 'Write an update… (@name to mention)' : 'Write a reply…',
+            replyingTo: _replyTo?.authorName,
+            onCancelReply: () => setState(() => _replyTo = null),
+            onSubmit: _post,
           ),
-        ]),
-      ),
+        ),
     ]);
   }
 }
@@ -421,9 +506,9 @@ class _UpdatesTabState extends ConsumerState<_UpdatesTab> {
 // --------------------------------------------------------------------- Files
 
 class _FilesTab extends ConsumerStatefulWidget {
-  const _FilesTab({required this.itemId, required this.onChanged});
+  const _FilesTab({required this.item, required this.onChanged});
 
-  final String itemId;
+  final ItemDetail item;
   final VoidCallback onChanged;
 
   @override
@@ -439,14 +524,10 @@ class _FilesTabState extends ConsumerState<_FilesTab> {
     if (file == null || file.bytes == null || !mounted) return;
     setState(() => _uploading = true);
     try {
-      await ref.read(itemRepositoryProvider).uploadFile(
-            bytes: file.bytes!,
-            filename: file.name,
-            itemId: widget.itemId,
-          );
-      ref.invalidate(itemFilesProvider(widget.itemId));
+      await ref.read(itemRepositoryProvider).uploadFile(bytes: file.bytes!, filename: file.name, itemId: widget.item.id);
+      ref.invalidate(itemFilesProvider(widget.item.id));
     } on ApiException catch (e) {
-      if (mounted) showDfToast(context, e.message, icon: Icons.error_outline_rounded);
+      if (mounted) _toastError(context, e);
     } finally {
       if (mounted) setState(() => _uploading = false);
     }
@@ -454,8 +535,9 @@ class _FilesTabState extends ConsumerState<_FilesTab> {
 
   @override
   Widget build(BuildContext context) {
-    final state = ref.watch(itemFilesProvider(widget.itemId));
+    final state = ref.watch(itemFilesProvider(widget.item.id));
     final text = Theme.of(context).textTheme;
+    final canEdit = widget.item.canEdit;
 
     return state.when(
       loading: () => const Center(child: CircularProgressIndicator()),
@@ -492,16 +574,17 @@ class _FilesTabState extends ConsumerState<_FilesTab> {
                     final file = files[index];
                     return _FileTile(
                       file: file,
-                      onDelete: () async {
-                        try {
-                          await ref.read(itemRepositoryProvider).deleteFile(file.id);
-                          ref.invalidate(itemFilesProvider(widget.itemId));
-                        } on ApiException catch (e) {
-                          if (context.mounted) {
-                            showDfToast(context, e.message, icon: Icons.error_outline_rounded);
-                          }
-                        }
-                      },
+                      onDelete: !canEdit
+                          ? null
+                          : () async {
+                              try {
+                                await ref.read(itemRepositoryProvider).deleteFile(file.id);
+                                ref.invalidate(itemFilesProvider(widget.item.id));
+                                widget.onChanged();
+                              } on ApiException catch (e) {
+                                if (context.mounted) _toastError(context, e);
+                              }
+                            },
                     )
                         .animate(delay: DfMotion.staggerStep * index)
                         .fadeIn(duration: DfMotion.expressiveShort, curve: DfMotion.enter)
@@ -514,18 +597,19 @@ class _FilesTabState extends ConsumerState<_FilesTab> {
                   },
                 ),
         ),
-        SafeArea(
-          top: false,
-          child: Padding(
-            padding: const EdgeInsets.all(DfSpacing.md),
-            child: DfButton(
-              label: 'Upload file',
-              icon: const Icon(Icons.upload_file_rounded, size: 20),
-              loading: _uploading,
-              onPressed: _upload,
+        if (canEdit)
+          SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.all(DfSpacing.md),
+              child: DfButton(
+                label: 'Upload file',
+                icon: const Icon(Icons.upload_file_rounded, size: 20),
+                loading: _uploading,
+                onPressed: _upload,
+              ),
             ),
           ),
-        ),
       ]),
     );
   }
@@ -535,7 +619,7 @@ class _FileTile extends StatelessWidget {
   const _FileTile({required this.file, required this.onDelete});
 
   final AppFile file;
-  final VoidCallback onDelete;
+  final VoidCallback? onDelete;
 
   @override
   Widget build(BuildContext context) {
@@ -575,15 +659,290 @@ class _FileTile extends StatelessWidget {
                     maxLines: 1, overflow: TextOverflow.ellipsis, style: text.labelSmall),
               ]),
             ),
-            IconButton(
-              visualDensity: VisualDensity.compact,
-              icon: const Icon(Icons.delete_outline_rounded, size: 16, color: DfColors.textTertiary),
-              tooltip: 'Delete file',
-              onPressed: onDelete,
-            ),
+            if (onDelete != null)
+              IconButton(
+                visualDensity: VisualDensity.compact,
+                icon: const Icon(Icons.delete_outline_rounded, size: 16, color: DfColors.textTertiary),
+                tooltip: 'Delete file',
+                onPressed: onDelete,
+              ),
           ]),
         ),
       ]),
+    );
+  }
+}
+
+// ------------------------------------------------------------------ Subitems
+
+class _SubitemsTab extends ConsumerStatefulWidget {
+  const _SubitemsTab({required this.item, required this.onChanged});
+
+  final ItemDetail item;
+  final VoidCallback onChanged;
+
+  @override
+  ConsumerState<_SubitemsTab> createState() => _SubitemsTabState();
+}
+
+class _SubitemsTabState extends ConsumerState<_SubitemsTab> {
+  final _nameController = TextEditingController();
+  final _nameFocus = FocusNode();
+  bool _adding = false;
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _nameFocus.dispose();
+    super.dispose();
+  }
+
+  void _refresh() {
+    widget.onChanged();
+    ref.invalidate(boardControllerProvider(widget.item.boardId));
+  }
+
+  Future<void> _add() async {
+    final name = _nameController.text.trim();
+    if (name.isEmpty || _adding) return;
+    setState(() => _adding = true);
+    try {
+      await ref.read(boardRepositoryProvider).createSubitem(parentItemId: widget.item.id, name: name);
+      _nameController.clear();
+      _refresh();
+      _nameFocus.requestFocus();
+    } on ApiException catch (e) {
+      if (mounted) _toastError(context, e);
+    } finally {
+      if (mounted) setState(() => _adding = false);
+    }
+  }
+
+  Future<void> _editCell(BoardItem sub, BoardColumn column) async {
+    final assignable =
+        await ref.read(assignableMembersProvider.future).catchError((Object _) => const <BoardMember>[]);
+    if (!mounted) return;
+    final result = await editCell(
+      context: context,
+      column: column,
+      item: sub,
+      members: assignable,
+      meUserId: _meUserId(ref),
+      files: ref.read(itemRepositoryProvider),
+    );
+    if (!mounted) return;
+    if (result.refresh) _refresh();
+    if (!result.changed) return;
+    try {
+      await ref.read(boardRepositoryProvider).setCellValue(itemId: sub.id, columnId: column.id, value: result.value);
+      _refresh();
+    } on ApiException catch (e) {
+      if (mounted) _toastError(context, e);
+    }
+  }
+
+  Future<void> _archive(BoardItem sub) async {
+    try {
+      await ref.read(boardRepositoryProvider).archiveItem(sub.id);
+      _refresh();
+      if (mounted) showDfToast(context, 'Archived "${sub.name}"', icon: Icons.archive_outlined);
+    } on ApiException catch (e) {
+      if (mounted) _toastError(context, e);
+    }
+  }
+
+  Future<void> _trash(BoardItem sub) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('Delete "${sub.name}"?', style: Theme.of(dialogContext).textTheme.titleMedium),
+        content: Text(
+          'It moves to the trash and is deleted for good after 30 days unless you restore it.',
+          style: Theme.of(dialogContext).textTheme.bodyMedium,
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Delete', style: TextStyle(color: DfColors.danger)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    try {
+      await ref.read(boardRepositoryProvider).trashItem(sub.id);
+      _refresh();
+      if (mounted) showDfToast(context, 'Moved "${sub.name}" to the trash', icon: Icons.delete_outline_rounded);
+    } on ApiException catch (e) {
+      if (mounted) _toastError(context, e);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final item = widget.item;
+    final text = Theme.of(context).textTheme;
+    final members = ref.watch(assignableMembersProvider).valueOrNull ?? const <BoardMember>[];
+    final columns = item.subitemColumns;
+    final canEdit = item.canEdit;
+
+    return Column(children: [
+      Expanded(
+        child: item.subitems.isEmpty
+            ? Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(DfSpacing.xl),
+                  child: Column(mainAxisSize: MainAxisSize.min, children: [
+                    const Icon(Icons.account_tree_outlined, size: 32, color: DfColors.textTertiary),
+                    const SizedBox(height: DfSpacing.xs),
+                    Text('No subitems yet', style: text.titleMedium),
+                    const SizedBox(height: DfSpacing.xxs),
+                    Text(
+                      canEdit
+                          ? 'Break this item into smaller steps\nyou can track one by one.'
+                          : 'This item has not been broken into steps.',
+                      textAlign: TextAlign.center,
+                      style: text.bodySmall,
+                    ),
+                  ]),
+                ),
+              )
+            : ListView(
+                padding: const EdgeInsets.all(DfSpacing.md),
+                children: [
+                  for (final (index, sub) in item.subitems.indexed)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: DfSpacing.xs),
+                      child: DfCard(
+                        padding: const EdgeInsets.fromLTRB(DfSpacing.md, DfSpacing.xs, DfSpacing.xs, DfSpacing.sm),
+                        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                          Row(children: [
+                            Expanded(
+                              child: InkWell(
+                                onTap: () => context.push('/items/${sub.id}'),
+                                borderRadius: BorderRadius.circular(DfRadius.sm),
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(vertical: DfSpacing.xxs),
+                                  child: Row(children: [
+                                    Expanded(
+                                      child: Text(
+                                        sub.name,
+                                        maxLines: 2,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: text.titleSmall,
+                                      ),
+                                    ),
+                                    if (sub.updatesCount > 0) ...[
+                                      const Icon(Icons.chat_bubble_outline_rounded,
+                                          size: 14, color: DfColors.textTertiary),
+                                      const SizedBox(width: 2),
+                                      Text('${sub.updatesCount}', style: text.labelSmall),
+                                    ],
+                                  ]),
+                                ),
+                              ),
+                            ),
+                            if (canEdit)
+                              PopupMenuButton<String>(
+                                icon: const Icon(Icons.more_horiz_rounded, size: 18, color: DfColors.textTertiary),
+                                onSelected: (action) => action == 'archive' ? _archive(sub) : _trash(sub),
+                                itemBuilder: (context) => const [
+                                  PopupMenuItem(value: 'archive', child: Text('Archive')),
+                                  PopupMenuItem(
+                                    value: 'trash',
+                                    child: Text('Delete', style: TextStyle(color: DfColors.danger)),
+                                  ),
+                                ],
+                              )
+                            else
+                              const SizedBox(width: DfSpacing.xs),
+                          ]),
+                          if (columns.isNotEmpty)
+                            Wrap(spacing: DfSpacing.xs, runSpacing: DfSpacing.xxs, children: [
+                              for (final column in columns)
+                                _SubitemChip(
+                                  column: column,
+                                  chip: cellChip(context, column, sub, members),
+                                  onTap: canEdit && !column.isReadOnly ? () => _editCell(sub, column) : null,
+                                ),
+                            ]),
+                        ]),
+                      ),
+                    )
+                        .animate(delay: DfMotion.staggerStep * (index.clamp(0, 8)))
+                        .fadeIn(duration: DfMotion.expressiveShort, curve: DfMotion.enter)
+                        .slideY(begin: 0.06, end: 0, duration: DfMotion.expressiveShort, curve: DfMotion.enter),
+                ],
+              ),
+      ),
+      if (canEdit)
+        SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.all(DfSpacing.sm),
+            child: Row(children: [
+              const SizedBox(width: DfSpacing.xs),
+              const Icon(Icons.subdirectory_arrow_right_rounded, size: 20, color: DfColors.textTertiary),
+              const SizedBox(width: DfSpacing.xs),
+              Expanded(
+                child: TextField(
+                  controller: _nameController,
+                  focusNode: _nameFocus,
+                  textInputAction: TextInputAction.done,
+                  onSubmitted: (_) => _add(),
+                  decoration: const InputDecoration(hintText: 'Add subitem'),
+                ),
+              ),
+              const SizedBox(width: DfSpacing.xs),
+              IconButton.filled(
+                onPressed: _adding ? null : _add,
+                tooltip: 'Add subitem',
+                icon: _adding
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                      )
+                    : const Icon(Icons.add_rounded, size: 20),
+              ),
+            ]),
+          ),
+        ),
+    ]);
+  }
+}
+
+/// A subitem's cell rendered as a tappable chip labelled with its column.
+class _SubitemChip extends StatelessWidget {
+  const _SubitemChip({required this.column, required this.chip, required this.onTap});
+
+  final BoardColumn column;
+  final Widget? chip;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = Theme.of(context).textTheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(DfRadius.sm),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: DfSpacing.xxs, vertical: 2),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Text('${column.title}: ', style: text.labelSmall),
+          chip ??
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: DfSpacing.xs, vertical: 2),
+                decoration: BoxDecoration(
+                  color: isDark ? DfColors.surfaceAltDark : DfColors.surfaceAlt,
+                  borderRadius: BorderRadius.circular(DfRadius.sm),
+                ),
+                child: Text(onTap == null ? '—' : 'Set', style: text.labelSmall),
+              ),
+        ]),
+      ),
     );
   }
 }

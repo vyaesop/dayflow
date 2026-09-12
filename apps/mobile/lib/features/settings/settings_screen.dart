@@ -19,6 +19,17 @@ final notificationPrefsProvider = FutureProvider.autoDispose<NotificationPrefs>(
   return NotificationPrefs.fromJson(await ApiClient.instance.get('/me/notification-prefs'));
 });
 
+/// Whether (and when) this account is scheduled for permanent deletion.
+final accountDeletionProvider =
+    FutureProvider.autoDispose<({DateTime? scheduledAt, int graceDays})>((ref) async {
+  final json = await ApiClient.instance.get('/admin/account/deletion');
+  final raw = json['scheduledAt'] as String?;
+  return (
+    scheduledAt: raw == null ? null : DateTime.tryParse(raw),
+    graceDays: json['graceDays'] as int? ?? 30,
+  );
+});
+
 const _personalStatuses = <({String? key, String label, IconData icon})>[
   (key: null, label: 'No status', icon: Icons.remove_circle_outline_rounded),
   (key: 'working_from_home', label: 'Working from home', icon: Icons.home_work_outlined),
@@ -140,6 +151,45 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         'pushEnabled': ?push,
       });
       ref.invalidate(notificationPrefsProvider);
+    } on ApiException catch (e) {
+      if (mounted) showDfToast(context, e.message, icon: Icons.error_outline_rounded);
+    }
+  }
+
+  Future<void> _scheduleAccountDeletion(Me me, int graceDays) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('Delete ${me.account.name}?', style: Theme.of(dialogContext).textTheme.titleMedium),
+        content: Text(
+          'Everything in this account — boards, items, files, and members — will be permanently '
+          'deleted in $graceDays days. Until then any admin can cancel from this screen.',
+          style: Theme.of(dialogContext).textTheme.bodySmall,
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Keep account')),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Schedule deletion', style: TextStyle(color: DfColors.danger)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      await ApiClient.instance.post('/admin/account/deletion');
+      ref.invalidate(accountDeletionProvider);
+      if (mounted) showDfToast(context, 'Deletion scheduled — cancel any time in the next $graceDays days');
+    } on ApiException catch (e) {
+      if (mounted) showDfToast(context, e.message, icon: Icons.error_outline_rounded);
+    }
+  }
+
+  Future<void> _cancelAccountDeletion() async {
+    try {
+      await ApiClient.instance.delete('/admin/account/deletion');
+      ref.invalidate(accountDeletionProvider);
+      if (mounted) showDfToast(context, 'Deletion cancelled — the account stays');
     } on ApiException catch (e) {
       if (mounted) showDfToast(context, e.message, icon: Icons.error_outline_rounded);
     }
@@ -345,6 +395,48 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   ]),
                 ),
               ),
+          ],
+          if (me.account.role == 'admin') ...[
+            const SizedBox(height: DfSpacing.md),
+            Text('Danger zone', style: text.labelMedium),
+            const SizedBox(height: DfSpacing.xs),
+            Consumer(builder: (context, ref, _) {
+              final deletion = ref.watch(accountDeletionProvider);
+              return deletion.when(
+                loading: () => const SizedBox.shrink(),
+                error: (error, stackTrace) => const SizedBox.shrink(),
+                data: (status) => status.scheduledAt == null
+                    ? DfCard(
+                        padding: EdgeInsets.zero,
+                        child: _EditRow(
+                          label: 'Delete this account',
+                          value: '${status.graceDays}-day grace period',
+                          onTap: () => _scheduleAccountDeletion(me, status.graceDays),
+                        ),
+                      )
+                    : DfCard(
+                        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                          Row(children: [
+                            const Icon(Icons.warning_amber_rounded, color: DfColors.danger, size: 20),
+                            const SizedBox(width: DfSpacing.xs),
+                            Expanded(
+                              child: Text(
+                                'This account will be permanently deleted on '
+                                '${MaterialLocalizations.of(context).formatMediumDate(status.scheduledAt!.toLocal())}.',
+                                style: text.titleSmall?.copyWith(color: DfColors.danger),
+                              ),
+                            ),
+                          ]),
+                          const SizedBox(height: DfSpacing.sm),
+                          DfButton(
+                            label: 'Cancel deletion',
+                            variant: DfButtonVariant.tonal,
+                            onPressed: _cancelAccountDeletion,
+                          ),
+                        ]),
+                      ),
+              );
+            }),
           ],
           const SizedBox(height: DfSpacing.lg),
           DfButton(

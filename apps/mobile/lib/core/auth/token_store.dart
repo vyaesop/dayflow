@@ -11,12 +11,21 @@ class TokenStore {
   );
   static const _kAccess = 'dayflow.accessToken';
   static const _kRefresh = 'dayflow.refreshToken';
+  static const _kPendingInvite = 'dayflow.pendingInvite';
 
   String? _accessToken;
 
   String? get accessToken => _accessToken;
 
   Future<String?> readRefreshToken() => _storage.read(key: _kRefresh);
+
+  /// An invite token from a deep link that arrived before sign-in; it
+  /// survives an app restart so the invitation is not lost mid-signup.
+  Future<String?> readPendingInvite() => _storage.read(key: _kPendingInvite);
+
+  Future<void> savePendingInvite(String token) => _storage.write(key: _kPendingInvite, value: token);
+
+  Future<void> clearPendingInvite() => _storage.delete(key: _kPendingInvite);
 
   Future<void> save({required String accessToken, required String refreshToken}) async {
     _accessToken = accessToken;

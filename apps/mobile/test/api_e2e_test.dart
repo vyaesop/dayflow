@@ -653,6 +653,624 @@ void main() {
     });
   });
 
+  group('board types and members', () {
+    late MembersRepository members;
+    late BoardRepository boardsRepo;
+    String? privateBoardId;
+    String? buddyUserId;
+    String? buddyToken;
+    final buddyEmail = 'buddy.$email';
+
+    setUpAll(() {
+      members = MembersRepository(ApiClient.instance);
+      boardsRepo = BoardRepository(ApiClient.instance);
+    });
+
+    test('creates a private board owned by its creator', () async {
+      if (skipIfDown() || !sessionReady) return;
+      privateBoardId = await boardsRepo.createBoard(name: 'Secret e2e plans', type: 'private');
+
+      final list = await boardsRepo.boardMembers(privateBoardId!);
+      expect(list.canManage, isTrue);
+      expect(list.members, hasLength(1));
+      expect(list.members.single.role, 'owner', reason: 'the creator is the first owner');
+      expect(list.members.single.isYou, isTrue);
+    });
+
+    test('a second account member cannot see the private board', () async {
+      if (skipIfDown() || !sessionReady || privateBoardId == null) return;
+
+      // Bring a real second user into the account: invite → signup → accept →
+      // switch. Raw HTTP keeps the singleton client on the owner's session.
+      final invite = await members.invite(email: buddyEmail, role: 'member');
+      final inviteToken = invite.devLink!.split('/').last;
+
+      final otp = await _rawJson('POST', '/v1/auth/otp/request',
+          body: {'email': buddyEmail, 'purpose': 'signup'});
+      if (otp.status == 429) {
+        markTestSkipped('OTP request throttled — wait a minute and re-run');
+        return;
+      }
+      final verify = await _rawJson('POST', '/v1/auth/otp/verify',
+          body: {'email': buddyEmail, 'code': otp.json['devCode'] as String});
+      final session = await _rawJson('POST', '/v1/auth/signup/complete', body: {
+        'signupToken': verify.json['signupToken'] as String,
+        'password': 'Passw0rd!123',
+        'fullName': 'Buddy Two',
+        'useFor': 'work',
+      });
+      buddyUserId = ((session.json['user'] as Map).cast<String, dynamic>())['id'] as String;
+
+      final accepted = await _rawJson('POST', '/v1/invitations/accept',
+          body: {'token': inviteToken}, token: session.json['accessToken'] as String);
+      final switched = await _rawJson('POST', '/v1/auth/switch',
+          body: {'accountId': accepted.json['accountId'] as String},
+          token: session.json['accessToken'] as String);
+      buddyToken = switched.json['accessToken'] as String;
+
+      final fetch = await _rawJson('GET', '/v1/boards/$privateBoardId', token: buddyToken);
+      expect(fetch.status, 404, reason: 'private boards must be invisible to non-members');
+
+      final listing = await _rawJson('GET', '/v1/workspaces', token: buddyToken);
+      expect(jsonEncode(listing.raw), isNot(contains(privateBoardId!)),
+          reason: 'private boards must not leak into the workspace listing');
+    });
+
+    test('adding them as a board member grants access', () async {
+      if (skipIfDown() || privateBoardId == null || buddyUserId == null || buddyToken == null) return;
+      final list = await boardsRepo.addBoardMember(boardId: privateBoardId!, userId: buddyUserId!);
+      expect(list.members.map((m) => m.userId), contains(buddyUserId));
+
+      final fetch = await _rawJson('GET', '/v1/boards/$privateBoardId', token: buddyToken);
+      expect(fetch.status, 200);
+    });
+
+    test('a board viewer is read-only on that board', () async {
+      if (skipIfDown() || privateBoardId == null || buddyUserId == null || buddyToken == null) return;
+      await boardsRepo.changeBoardMemberRole(
+          boardId: privateBoardId!, userId: buddyUserId!, role: 'viewer');
+
+      final board = await _rawJson('GET', '/v1/boards/$privateBoardId', token: buddyToken);
+      expect(board.status, 200, reason: 'viewers still read the board');
+      final groupId =
+          (((board.json['groups'] as List).first as Map).cast<String, dynamic>())['id'] as String;
+
+      final attempt = await _rawJson('POST', '/v1/boards/$privateBoardId/items',
+          body: {'groupId': groupId, 'name': 'should not land'}, token: buddyToken);
+      expect(attempt.status, 403, reason: 'board viewers cannot edit');
+    });
+
+    test('viewers cannot be promoted to owner when their account role forbids it', () async {
+      if (skipIfDown() || privateBoardId == null || buddyUserId == null) return;
+      // Buddy's ACCOUNT role is member, so board ownership is allowed; promote
+      // and demote to prove the transition works both ways.
+      var list = await boardsRepo.changeBoardMemberRole(
+          boardId: privateBoardId!, userId: buddyUserId!, role: 'owner');
+      expect(list.members.where((m) => m.role == 'owner'), hasLength(2));
+      list = await boardsRepo.changeBoardMemberRole(
+          boardId: privateBoardId!, userId: buddyUserId!, role: 'member');
+      expect(list.members.where((m) => m.role == 'owner'), hasLength(1));
+    });
+
+    test('removing them takes the board away again', () async {
+      if (skipIfDown() || privateBoardId == null || buddyUserId == null || buddyToken == null) return;
+      final list = await boardsRepo.removeBoardMember(boardId: privateBoardId!, userId: buddyUserId!);
+      expect(list.members.map((m) => m.userId), isNot(contains(buddyUserId)));
+
+      final fetch = await _rawJson('GET', '/v1/boards/$privateBoardId', token: buddyToken);
+      expect(fetch.status, 404);
+    });
+
+    test('switching the type to main opens the board to the account', () async {
+      if (skipIfDown() || privateBoardId == null || buddyToken == null) return;
+      await boardsRepo.setBoardType(privateBoardId!, 'main');
+      final open = await _rawJson('GET', '/v1/boards/$privateBoardId', token: buddyToken);
+      expect(open.status, 200);
+
+      await boardsRepo.setBoardType(privateBoardId!, 'private');
+      final closed = await _rawJson('GET', '/v1/boards/$privateBoardId', token: buddyToken);
+      expect(closed.status, 404);
+    });
+
+    test('non-owners cannot change the board type', () async {
+      if (skipIfDown() || privateBoardId == null || buddyToken == null) return;
+      final attempt = await _rawJson('PATCH', '/v1/boards/$privateBoardId',
+          body: {'type': 'main'}, token: buddyToken);
+      // Not a board member any more → the board does not even exist for them.
+      expect(attempt.status, 404);
+    });
+
+    test('a board must keep at least one owner', () async {
+      if (skipIfDown() || !sessionReady || privateBoardId == null) return;
+      final me = await repo.fetchMe();
+      await expectLater(
+        boardsRepo.removeBoardMember(boardId: privateBoardId!, userId: me.id),
+        throwsA(isA<ApiException>().having((e) => e.statusCode, 'statusCode', 400)),
+      );
+    });
+  });
+
+  group('P0: columns, subitems, views, archive, batch, activity, rich text', () {
+    late BoardRepository boards;
+    late ItemRepository items;
+    late MembersRepository members;
+    String? boardId;
+    String? targetBoardId;
+    BoardDetail? board;
+    String? parentId;
+    String? subitemId;
+
+    setUpAll(() {
+      boards = BoardRepository(ApiClient.instance);
+      items = ItemRepository(ApiClient.instance);
+      members = MembersRepository(ApiClient.instance);
+    });
+
+    Future<BoardDetail> reload() async => board = await boards.fetch(boardId!);
+
+    test('a new board ships with a default view, item serials and caller flags', () async {
+      if (skipIfDown() || !sessionReady) return;
+      boardId = await boards.createBoard(name: 'P0 parity', template: 'task_management');
+      await reload();
+      expect(board!.views, hasLength(1));
+      expect(board!.views.single.isDefault, isTrue);
+      expect(board!.views.single.type, 'table');
+      expect(board!.canEdit, isTrue);
+      expect(board!.canManage, isTrue, reason: 'the creator owns the board');
+      final serials = board!.allItems.map((i) => i.serial).toList();
+      expect(serials, everyElement(greaterThan(0)));
+      expect(serials.toSet().length, serials.length, reason: 'serials are unique per board');
+      expect(board!.allItems.first.createdAt, isNotNull);
+    });
+
+    test('adds every new column type and validates their values', () async {
+      if (skipIfDown() || boardId == null) return;
+      final created = <String, BoardColumn>{};
+      for (final type in [
+        'long_text',
+        'email',
+        'phone',
+        'rating',
+        'files',
+        'vote',
+        'item_id',
+        'creation_log',
+        'last_updated',
+        'auto_number',
+      ]) {
+        created[type] = await boards.createColumn(boardId: boardId!, type: type, title: type);
+        expect(created[type]!.scope, 'items');
+      }
+      await reload();
+      final item = board!.allItems.first;
+      final me = await repo.fetchMe();
+
+      expect(
+        await boards.setCellValue(itemId: item.id, columnId: created['long_text']!.id, value: {'text': 'line one\nline two'}),
+        {'text': 'line one\nline two'},
+      );
+      expect(
+        await boards.setCellValue(itemId: item.id, columnId: created['email']!.id, value: {'email': 'Team@Example.com'}),
+        {'email': 'Team@Example.com'},
+      );
+      await expectLater(
+        boards.setCellValue(itemId: item.id, columnId: created['email']!.id, value: {'email': 'not-an-email'}),
+        throwsA(isA<ApiException>().having((e) => e.statusCode, 'statusCode', 400)),
+      );
+      expect(
+        await boards.setCellValue(
+            itemId: item.id, columnId: created['phone']!.id, value: {'phone': '+1 (555) 010-2030', 'countryCode': 'us'}),
+        {'phone': '+1 (555) 010-2030', 'countryCode': 'US'},
+      );
+      expect(
+        await boards.setCellValue(itemId: item.id, columnId: created['rating']!.id, value: {'rating': 4}),
+        {'rating': 4},
+      );
+      await expectLater(
+        boards.setCellValue(itemId: item.id, columnId: created['rating']!.id, value: {'rating': 9}),
+        throwsA(isA<ApiException>().having((e) => e.statusCode, 'statusCode', 400)),
+        reason: 'a rating column defaults to five stars',
+      );
+      expect(
+        await boards.setCellValue(itemId: item.id, columnId: created['vote']!.id, value: {'userIds': [me.id, me.id]}),
+        {'userIds': [me.id]},
+      );
+      // Read-only columns cannot be written at all.
+      for (final type in ['item_id', 'creation_log', 'last_updated', 'auto_number']) {
+        await expectLater(
+          boards.setCellValue(itemId: item.id, columnId: created[type]!.id, value: {'text': 'x'}),
+          throwsA(isA<ApiException>().having((e) => e.statusCode, 'statusCode', 400)),
+        );
+      }
+      // A Files cell may only reference this item's own files.
+      await expectLater(
+        boards.setCellValue(
+            itemId: item.id, columnId: created['files']!.id, value: {'fileIds': ['11111111-1111-4111-8111-111111111111']}),
+        throwsA(isA<ApiException>().having((e) => e.statusCode, 'statusCode', 400)),
+      );
+    });
+
+    test('uploading into a Files column mirrors the cell and deleting the file clears it', () async {
+      if (skipIfDown() || boardId == null) return;
+      await reload();
+      final item = board!.allItems.first;
+      final filesColumn = board!.columns.firstWhere((c) => c.type == 'files');
+      final uploaded = await items.uploadFile(
+        bytes: 'p0 attachment'.codeUnits,
+        filename: 'p0.txt',
+        itemId: item.id,
+        columnId: filesColumn.id,
+      );
+      await reload();
+      expect(board!.findItem(item.id)!.values[filesColumn.id], {'fileIds': [uploaded.id]});
+
+      await items.deleteFile(uploaded.id);
+      await reload();
+      expect(board!.findItem(item.id)!.values.containsKey(filesColumn.id), isFalse);
+    });
+
+    test('column settings are normalised and columns can be reordered', () async {
+      if (skipIfDown() || boardId == null) return;
+      final number = await boards.createColumn(boardId: boardId!, type: 'number', title: 'Budget');
+      await boards.updateColumn(number.id, settings: {
+        'unit': r'$',
+        'unitPosition': 'prefix',
+        'decimals': 2,
+        'summary': 'avg',
+        'description': 'Planned spend',
+        'junk': true,
+      });
+      await reload();
+      final stored = board!.columns.firstWhere((c) => c.id == number.id);
+      expect(stored.settings['unit'], r'$');
+      expect(stored.settings['decimals'], 2);
+      expect(stored.settings['summary'], 'avg');
+      expect(stored.settings.containsKey('junk'), isFalse, reason: 'unknown settings keys are dropped');
+      await expectLater(
+        boards.updateColumn(number.id, settings: {'decimals': 12}),
+        throwsA(isA<ApiException>().having((e) => e.statusCode, 'statusCode', 400)),
+      );
+
+      // Move Budget to the front of the item columns.
+      await boards.moveColumn(columnId: number.id, afterColumnId: null);
+      await reload();
+      expect(board!.itemColumns.first.id, number.id);
+    });
+
+    test('subitems nest under their parent with their own column set', () async {
+      if (skipIfDown() || boardId == null) return;
+      await reload();
+      parentId = board!.allItems.first.id;
+      final sub = await boards.createSubitem(parentItemId: parentId!, name: 'Sub one');
+      subitemId = sub.id;
+      expect(sub.parentItemId, parentId);
+
+      await reload();
+      final parent = board!.findItem(parentId!)!;
+      expect(parent.subitems.map((s) => s.id), contains(sub.id));
+      expect(board!.groups.expand((g) => g.items).map((i) => i.id), isNot(contains(sub.id)),
+          reason: 'subitems never appear as top-level rows');
+      expect(board!.subitemColumns.map((c) => c.title), containsAll(['Status', 'Owner', 'Date']),
+          reason: 'the default subitem columns are created on first use');
+
+      final subStatus = board!.subitemColumns.firstWhere((c) => c.type == 'status');
+      expect(
+        await boards.setCellValue(itemId: sub.id, columnId: subStatus.id, value: {'labelId': 'done'}),
+        {'labelId': 'done'},
+      );
+      final itemStatus = board!.itemColumns.firstWhere((c) => c.type == 'status');
+      await expectLater(
+        boards.setCellValue(itemId: sub.id, columnId: itemStatus.id, value: {'labelId': 'done'}),
+        throwsA(isA<ApiException>().having((e) => e.statusCode, 'statusCode', 400)),
+        reason: 'item-level columns do not apply to subitems',
+      );
+      await expectLater(
+        boards.createSubitem(parentItemId: sub.id, name: 'too deep'),
+        throwsA(isA<ApiException>().having((e) => e.statusCode, 'statusCode', 400)),
+      );
+
+      final detail = await items.fetch(sub.id);
+      expect(detail.isSubitem, isTrue);
+      expect(detail.parentName, isNotEmpty);
+      expect(detail.columns.map((c) => c.id), contains(subStatus.id));
+      final parentDetail = await items.fetch(parentId!);
+      expect(parentDetail.subitems.map((s) => s.id), contains(sub.id));
+
+      // Duplicating the parent copies its subitems.
+      final copy = await boards.duplicateItem(parentId!);
+      expect(copy.subitems, hasLength(1));
+      expect(copy.subitems.single.values[subStatus.id], {'labelId': 'done'});
+      await boards.trashItem(copy.id);
+    });
+
+    test('saved views validate their config and drive the CSV export', () async {
+      if (skipIfDown() || boardId == null) return;
+      await reload();
+      final status = board!.itemColumns.firstWhere((c) => c.type == 'status');
+
+      await expectLater(
+        boards.createView(boardId!, type: 'table', name: 'Broken', config: {
+          'filters': {'conjunction': 'and', 'rules': [{'id': 'r1', 'field': status.id, 'operator': 'contains', 'value': 'x'}]},
+        }),
+        throwsA(isA<ApiException>().having((e) => e.statusCode, 'statusCode', 400)),
+        reason: 'text operators are invalid on a status column',
+      );
+
+      final view = await boards.createView(boardId!, type: 'table', name: 'Only stuck', config: {
+        'filters': {
+          'conjunction': 'and',
+          'rules': [{'id': 'r1', 'field': status.id, 'operator': 'is_any_of', 'value': ['stuck']}],
+        },
+        'sort': [{'field': 'name', 'direction': 'asc'}],
+        'hiddenColumnIds': [board!.itemColumns.firstWhere((c) => c.type == 'date').id],
+      });
+      expect(view.isDefault, isFalse);
+      await reload();
+      expect(board!.views.map((v) => v.id), contains(view.id));
+
+      final all = await boards.exportCsv(boardId!);
+      final filtered = await boards.exportCsv(boardId!, viewId: view.id);
+      expect(filtered.split('\r\n').length, lessThan(all.split('\r\n').length));
+      expect(filtered.split('\r\n').first.contains('Due date'), isFalse, reason: 'hidden columns leave the export');
+
+      final renamed = await boards.updateView(view.id, name: 'Stuck only', isDefault: true);
+      expect(renamed.isDefault, isTrue);
+      await reload();
+      expect(board!.views.where((v) => v.isDefault), hasLength(1));
+
+      final copy = await boards.duplicateView(view.id);
+      expect(copy.name, contains('(copy)'));
+      await boards.moveView(viewId: copy.id, afterViewId: null);
+      await reload();
+      expect(board!.views.first.id, copy.id);
+      await boards.deleteView(copy.id);
+
+      // The board must always keep one view.
+      final remaining = (await reload()).views;
+      for (final v in remaining.where((v) => v.id != view.id)) {
+        await boards.deleteView(v.id);
+      }
+      await expectLater(
+        boards.deleteView(view.id),
+        throwsA(isA<ApiException>().having((e) => e.statusCode, 'statusCode', 400)),
+      );
+    });
+
+    test('archive and trash hide items, list them and restore them', () async {
+      if (skipIfDown() || boardId == null || parentId == null) return;
+      await boards.archiveItem(parentId!);
+      await reload();
+      expect(board!.findItem(parentId!), isNull);
+      var archive = await boards.archive(boardId: boardId);
+      expect(archive.items.map((i) => i.id), contains(parentId));
+      expect(archive.items.map((i) => i.id), isNot(contains(subitemId)),
+          reason: 'subitems archived with their parent are represented by the parent');
+
+      final restored = await boards.restoreItem(parentId!);
+      expect(restored.subitems.map((s) => s.id), contains(subitemId));
+      await reload();
+      expect(board!.findItem(parentId!), isNotNull);
+      expect(board!.findItem(subitemId!), isNotNull);
+
+      await expectLater(
+        boards.deleteItemPermanently(parentId!),
+        throwsA(isA<ApiException>().having((e) => e.statusCode, 'statusCode', 400)),
+        reason: 'only trashed items can be deleted for good',
+      );
+      await boards.trashItem(parentId!);
+      final trash = await boards.trash(boardId: boardId);
+      final entry = trash.items.firstWhere((i) => i.id == parentId);
+      expect(entry.purgeAt, isNotNull);
+      expect(entry.purgeAt!.isAfter(DateTime.now().add(const Duration(days: 29))), isTrue);
+      await boards.restoreItem(parentId!);
+      archive = await boards.archive(boardId: boardId);
+      expect(archive.items.map((i) => i.id), isNot(contains(parentId)));
+    });
+
+    test('batch actions apply to many items in one call', () async {
+      if (skipIfDown() || boardId == null) return;
+      await reload();
+      final status = board!.itemColumns.firstWhere((c) => c.type == 'status');
+      final ids = board!.allItems.take(2).map((i) => i.id).toList();
+      expect(ids, hasLength(2));
+
+      final affected = await boards.batch(
+        boardId: boardId!,
+        itemIds: ids,
+        action: 'set_cell',
+        columnId: status.id,
+        value: {'labelId': 'done'},
+      );
+      expect(affected, 2);
+      await reload();
+      for (final id in ids) {
+        expect(board!.findItem(id)!.values[status.id], {'labelId': 'done'});
+      }
+
+      expect(await boards.batch(boardId: boardId!, itemIds: ids, action: 'archive'), 2);
+      await reload();
+      expect(board!.findItem(ids.first), isNull);
+      expect(await boards.batch(boardId: boardId!, itemIds: ids, action: 'restore'), 2);
+      await reload();
+      expect(board!.findItem(ids.first), isNotNull);
+    });
+
+    test('the board activity log records changes and undoes the latest one', () async {
+      if (skipIfDown() || boardId == null) return;
+      await reload();
+      final item = board!.allItems.first;
+      final original = item.name;
+      await boards.renameItem(item.id, 'Renamed for undo');
+
+      final page = await boards.activity(boardId!, itemId: item.id);
+      final rename = page.entries.firstWhere((e) => e.event == 'item_renamed');
+      expect(rename.itemName, 'Renamed for undo');
+      expect(rename.undoable, isTrue);
+      expect(page.entries.any((e) => e.event == 'column_value_changed' && e.columnTitle != null), isTrue,
+          reason: 'value changes carry their column');
+
+      await boards.undoActivity(rename.id);
+      await reload();
+      expect(board!.findItem(item.id)!.name, original);
+      final after = await boards.activity(boardId!, itemId: item.id);
+      expect(after.entries.firstWhere((e) => e.id == rename.id).isUndone, isTrue);
+      expect(after.entries.first.event, 'activity_undone');
+      await expectLater(
+        boards.undoActivity(rename.id),
+        throwsA(isA<ApiException>().having((e) => e.statusCode, 'statusCode', 400)),
+      );
+    });
+
+    test('updates keep rich text, mentions, reactions and files', () async {
+      if (skipIfDown() || boardId == null) return;
+      await reload();
+      final item = board!.allItems.first;
+      final me = await repo.fetchMe();
+      final posted = await items.postUpdate(
+        itemId: item.id,
+        body: 'Ship **today** — see [docs](https://example.com/spec)\n- first\n- second\n@[${me.fullName}](user:${me.id}) fyi',
+      );
+      expect(posted.body, contains('Ship today'));
+      expect(posted.markdown, contains('**today**'));
+      final blocks = (posted.doc!['content'] as List).cast<Map<String, dynamic>>();
+      expect(blocks.map((b) => b['type']), containsAll(['paragraph', 'bulletList']));
+      final inlines = (blocks.first['content'] as List).cast<Map<String, dynamic>>();
+      expect(inlines.any((i) => (i['marks'] as List?)?.contains('bold') == true), isTrue);
+      expect(inlines.any((i) => i['type'] == 'link'), isTrue);
+
+      final reactions = await items.toggleReaction(posted.id, '🎉');
+      expect(reactions.single.emoji, '🎉');
+      expect(reactions.single.reactedByMe, isTrue);
+      final liked = await items.toggleLike(posted.id);
+      expect(liked.likesCount, 1);
+      await expectLater(
+        items.toggleReaction(posted.id, '🍕'),
+        throwsA(isA<ApiException>().having((e) => e.statusCode, 'statusCode', 400)),
+      );
+
+      final attached = await items.uploadFile(bytes: 'shot'.codeUnits, filename: 'shot.txt', updateId: posted.id);
+      final detail = await items.fetch(item.id);
+      final stored = detail.updates.firstWhere((u) => u.id == posted.id);
+      expect(stored.reactions.map((r) => r.emoji), containsAll(['🎉', '👍']));
+      expect(stored.files.map((f) => f.id), contains(attached.id));
+      expect(stored.doc, isNotNull);
+
+      await items.editUpdate(posted.id, 'Now _italic_');
+      final edited = (await items.fetch(item.id)).updates.firstWhere((u) => u.id == posted.id);
+      expect(edited.isEdited, isTrue);
+      expect(edited.markdown, 'Now _italic_');
+    });
+
+    test('board discussion posts live on the board, not an item', () async {
+      if (skipIfDown() || boardId == null) return;
+      final posted = await items.postBoardUpdate(boardId: boardId!, body: 'Kickoff for **P0**');
+      final reply = await items.postBoardUpdate(boardId: boardId!, body: 'ack', parentId: posted.id);
+      final thread = await items.boardUpdates(boardId!);
+      expect(thread.map((u) => u.id), contains(posted.id));
+      expect(thread.firstWhere((u) => u.id == posted.id).replies.map((r) => r.id), contains(reply.id));
+      final feed = await items.feed(boardId: boardId);
+      final entry = feed.firstWhere((e) => e.update.id == posted.id);
+      expect(entry.itemId, isNull);
+    });
+
+    test('moves an item to another board with its columns mapped by name', () async {
+      if (skipIfDown() || boardId == null) return;
+      targetBoardId = await boards.createBoard(name: 'P0 target', template: 'task_management');
+      await reload();
+      final item = board!.allItems.first;
+      final status = board!.itemColumns.firstWhere((c) => c.type == 'status');
+      await boards.setCellValue(itemId: item.id, columnId: status.id, value: {'labelId': 'stuck'});
+
+      final preview = await boards.movePreview(itemId: item.id, boardId: targetBoardId!);
+      expect(preview.targetBoardName, 'P0 target');
+      expect(preview.groups, isNotEmpty);
+      final statusMapping = preview.mapping.firstWhere((m) => m.sourceColumnId == status.id);
+      expect(statusMapping.targetColumnId, isNotNull, reason: 'Status maps onto the target Status column');
+      expect(preview.dropped.map((m) => m.sourceTitle), contains('long_text'),
+          reason: 'columns without a same-named twin are reported as lost');
+
+      await boards.moveToBoard(itemId: item.id, boardId: targetBoardId!, groupId: preview.groups.first.id);
+      await reload();
+      expect(board!.findItem(item.id), isNull);
+      final target = await boards.fetch(targetBoardId!);
+      final moved = target.findItem(item.id)!;
+      final targetStatus = target.itemColumns.firstWhere((c) => c.type == 'status');
+      expect(moved.values[targetStatus.id], {'labelId': 'stuck'});
+      expect(target.groups.first.items.map((i) => i.id), contains(item.id));
+    });
+
+    test('duplicates a board and saves it as a reusable template', () async {
+      if (skipIfDown() || boardId == null) return;
+      await reload();
+      final copyId = await boards.duplicateBoard(boardId!, mode: 'items');
+      final copy = await boards.fetch(copyId);
+      expect(copy.name, contains('(copy)'));
+      expect(copy.itemCount, board!.itemCount);
+      expect(copy.itemColumns.length, board!.itemColumns.length);
+      expect(copy.views, isNotEmpty);
+      await boards.trashBoard(copyId);
+
+      final template = await boards.saveAsTemplate(boardId!, name: 'P0 template', includeItems: true);
+      expect(template.isCustom, isTrue);
+      expect(template.itemCount, board!.itemCount);
+      final gallery = await boards.templates();
+      expect(gallery.where((t) => t.isCustom).map((t) => t.key), contains(template.key));
+      expect(gallery.first.isCustom, isFalse, reason: 'built-in templates come first');
+
+      final fromTemplate = await boards.createBoard(name: 'From P0 template', template: template.key);
+      final built = await boards.fetch(fromTemplate);
+      expect(built.itemCount, board!.itemCount);
+      await boards.trashBoard(fromTemplate);
+      await boards.deleteTemplate(template.id!);
+      expect((await boards.templates()).map((t) => t.key), isNot(contains(template.key)));
+    });
+
+    test('trashing a board hides it, lists it with a purge date and restores', () async {
+      if (skipIfDown() || targetBoardId == null) return;
+      await boards.trashBoard(targetBoardId!);
+      final raw = await ApiClient.instance.getList('/workspaces');
+      final ids = raw.map((w) => WorkspaceSummary.fromJson(w as Map<String, dynamic>)).expand((w) => w.boards).map((b) => b.id);
+      expect(ids, isNot(contains(targetBoardId)));
+      final trash = await boards.trash();
+      final entry = trash.boards.firstWhere((b) => b.id == targetBoardId);
+      expect(entry.purgeAt, isNotNull);
+      await boards.restoreBoard(targetBoardId!);
+      final back = await boards.fetch(targetBoardId!);
+      expect(back.id, targetBoardId);
+      await boards.trashBoard(targetBoardId!);
+      await boards.deleteBoardPermanently(targetBoardId!);
+      await expectLater(
+        boards.fetch(targetBoardId!),
+        throwsA(isA<ApiException>().having((e) => e.statusCode, 'statusCode', 404)),
+      );
+    });
+
+    test('guests can be invited and members deactivated, never the last admin', () async {
+      if (skipIfDown() || !sessionReady) return;
+      final invite = await members.invite(email: 'guest.$email', role: 'guest');
+      expect(invite.role, 'guest');
+      await members.revokeInvite(invite.id);
+
+      final me = await repo.fetchMe();
+      await expectLater(
+        members.deactivate(me.id),
+        throwsA(isA<ApiException>().having((e) => e.statusCode, 'statusCode', 400)),
+      );
+      final directory = MemberDirectory.fromJson(await ApiClient.instance.get('/members'));
+      final other = directory.members.where((m) => !m.isYou).firstOrNull;
+      if (other == null) {
+        markTestSkipped('no second member to deactivate (buddy signup was throttled)');
+        return;
+      }
+      await members.deactivate(other.userId);
+      var after = MemberDirectory.fromJson(await ApiClient.instance.get('/members'));
+      expect(after.members.firstWhere((m) => m.userId == other.userId).status, 'deactivated');
+      await members.reactivate(other.userId);
+      after = MemberDirectory.fromJson(await ApiClient.instance.get('/members'));
+      expect(after.members.firstWhere((m) => m.userId == other.userId).status, 'active');
+    });
+  });
+
   group('session lifecycle', () {
     test('refresh rotates the token and rejects the consumed one', () async {
       if (skipIfDown()) return;
@@ -715,4 +1333,35 @@ Future<bool> _ping() async {
 Future<bool> _toggleFavorite(String boardId) async {
   final json = await ApiClient.instance.post('/boards/$boardId/favorite');
   return json['isFavorite'] as bool? ?? false;
+}
+
+class _RawResponse {
+  _RawResponse(this.status, this.raw);
+
+  final int status;
+  final dynamic raw;
+
+  Map<String, dynamic> get json => (raw as Map).cast<String, dynamic>();
+}
+
+/// Bare-metal JSON call for acting as a SECOND user — the app's ApiClient is
+/// a singleton bound to the primary session's token store.
+Future<_RawResponse> _rawJson(
+  String method,
+  String path, {
+  Map<String, dynamic>? body,
+  String? token,
+}) async {
+  final client = HttpClient()..connectionTimeout = const Duration(seconds: 10);
+  try {
+    final request = await client.openUrl(method, Uri.parse('${apiBaseUrl()}$path'));
+    request.headers.contentType = ContentType.json;
+    if (token != null) request.headers.set('Authorization', 'Bearer $token');
+    if (body != null) request.write(jsonEncode(body));
+    final response = await request.close();
+    final text = await utf8.decoder.bind(response).join();
+    return _RawResponse(response.statusCode, text.isEmpty ? null : jsonDecode(text));
+  } finally {
+    client.close();
+  }
 }

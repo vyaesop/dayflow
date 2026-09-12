@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/api/api_client.dart';
@@ -10,9 +11,17 @@ import 'board_repository.dart';
 
 final boardRepositoryProvider = Provider<BoardRepository>((ref) => BoardRepository(ApiClient.instance));
 
+/// Link state of the realtime connection, for "live vs. auto-refresh" UI.
+final realtimeStatusProvider = Provider<ValueNotifier<RealtimeStatus>>(
+  (ref) => RealtimeClient.instance.status,
+);
+
 final templatesProvider = FutureProvider.autoDispose<List<BoardTemplate>>(
   (ref) => ref.read(boardRepositoryProvider).templates(),
 );
+
+/// The saved view a board screen is showing; null falls back to the default view.
+final activeViewIdProvider = StateProvider.autoDispose.family<String?, String>((ref, boardId) => null);
 
 /// Board state with optimistic editing: every mutation updates the local copy
 /// first, then reconciles with the server and rolls back on failure.
@@ -22,6 +31,11 @@ final boardControllerProvider =
 class BoardController extends AutoDisposeFamilyAsyncNotifier<BoardDetail, String> {
   BoardRepository get _repo => ref.read(boardRepositoryProvider);
   StreamSubscription<BoardEvent>? _live;
+  Timer? _poll;
+  bool _wasDegraded = false;
+
+  /// How often the board re-reads itself while the realtime link is down.
+  static const pollInterval = Duration(seconds: 25);
 
   @override
   Future<BoardDetail> build(String boardId) async {
@@ -34,12 +48,34 @@ class BoardController extends AutoDisposeFamilyAsyncNotifier<BoardDetail, String
     _live = RealtimeClient.instance.events
         .where((event) => event.boardId == boardId)
         .listen(_applyRemoteEvent);
+
+    // When the socket cannot connect (serverless host, flaky network), fall
+    // back to periodic refetching so the board still converges.
+    RealtimeClient.instance.status.addListener(_onLinkChange);
+    _onLinkChange();
+
     ref.onDispose(() {
+      RealtimeClient.instance.status.removeListener(_onLinkChange);
+      _poll?.cancel();
       _live?.cancel();
       RealtimeClient.instance.unsubscribe(boardId);
     });
 
     return _repo.fetch(boardId);
+  }
+
+  void _onLinkChange() {
+    final status = RealtimeClient.instance.status.value;
+    if (status == RealtimeStatus.connected) {
+      _poll?.cancel();
+      _poll = null;
+      // Catch up on anything that happened while events could not reach us.
+      if (_wasDegraded) unawaited(_refetch());
+      _wasDegraded = false;
+    } else if (status == RealtimeStatus.offline && _poll == null) {
+      _wasDegraded = true;
+      _poll = Timer.periodic(pollInterval, (_) => unawaited(_refetch()));
+    }
   }
 
   /// Folds a server-pushed event into local state.
@@ -59,6 +95,18 @@ class BoardController extends AutoDisposeFamilyAsyncNotifier<BoardDetail, String
         final incoming = BoardItem.fromJson(json);
         // Ignore a duplicate we already hold (e.g. after a refetch raced us).
         if (board.findItem(incoming.id) != null) return;
+        if (incoming.parentItemId != null) {
+          final parent = board.findItem(incoming.parentItemId!);
+          if (parent == null) {
+            unawaited(_refetch());
+            return;
+          }
+          state = AsyncData(board.withItem(
+            incoming.parentItemId!,
+            (p) => p.copyWith(subitems: [...p.subitems, incoming]),
+          ));
+          return;
+        }
         if (!board.groups.any((g) => g.id == groupId)) {
           unawaited(_refetch());
           return;
@@ -70,16 +118,21 @@ class BoardController extends AutoDisposeFamilyAsyncNotifier<BoardDetail, String
 
       case 'item.updated':
         final itemId = event.itemId;
-        final name = event.patch?['name'] as String?;
-        if (itemId == null || name == null) return;
-        state = AsyncData(board.withItem(itemId, (item) => item.copyWith(name: name)));
+        final patch = event.patch;
+        if (itemId == null || patch == null || board.findItem(itemId) == null) return;
+        state = AsyncData(board.withItem(
+          itemId,
+          (item) => item.copyWith(
+            name: patch['name'] as String?,
+            updatedAt: patch['updatedAt'] != null ? DateTime.tryParse(patch['updatedAt'] as String) : null,
+            updatedByUserId: patch['updatedByUserId'] as String?,
+          ),
+        ));
 
       case 'item.deleted':
         final itemId = event.itemId;
         if (itemId == null) return;
-        state = AsyncData(board.copyWith(groups: [
-          for (final g in board.groups) g.copyWith(items: g.items.where((i) => i.id != itemId).toList()),
-        ]));
+        state = AsyncData(board.withoutItem(itemId));
 
       case 'cell.changed':
         final itemId = event.itemId;
@@ -127,14 +180,21 @@ class BoardController extends AutoDisposeFamilyAsyncNotifier<BoardDetail, String
           columns: board.columns.where((c) => c.id != columnId).toList(),
           groups: [
             for (final g in board.groups)
-              g.copyWith(items: [for (final i in g.items) i.withCell(columnId, null)]),
+              g.copyWith(items: [
+                for (final i in g.items)
+                  i.withCell(columnId, null).copyWith(
+                    subitems: [for (final s in i.subitems) s.withCell(columnId, null)],
+                  ),
+              ]),
           ],
         ));
 
-      // Moves and column/board metadata changes need positions and settings we
-      // don't receive, so re-read the board.
+      // Moves, column/board metadata, view and batch changes need positions
+      // and settings we don't receive, so re-read the board.
       case 'item.moved':
       case 'column.updated':
+      case 'column.moved':
+      case 'views.changed':
       case 'board.updated':
         unawaited(_refetch());
     }
@@ -217,16 +277,34 @@ class BoardController extends AutoDisposeFamilyAsyncNotifier<BoardDetail, String
     }
   }
 
+  /// Adds a subitem under [parentItemId]. The board's subitem columns may be
+  /// created server-side on first use, so the board is re-read afterwards.
+  Future<BoardItem?> addSubitem({required String parentItemId, required String name}) async {
+    final board = _board;
+    if (board == null) return null;
+    final created = await _repo.createSubitem(parentItemId: parentItemId, name: name);
+    final current = _board;
+    if (current == null) return created;
+    state = AsyncData(current.withItem(parentItemId, (p) => p.copyWith(subitems: [...p.subitems, created])));
+    if (current.subitemColumns.isEmpty) await _refetch();
+    return created;
+  }
+
   Future<void> renameItem(String itemId, String name) => _optimistic(
         mutate: (board) => board.withItem(itemId, (item) => item.copyWith(name: name)),
         call: () => _repo.renameItem(itemId, name),
       );
 
+  /// Archive: hidden from the board, kept indefinitely, restorable.
   Future<void> archiveItem(String itemId) => _optimistic(
-        mutate: (board) => board.copyWith(groups: [
-          for (final g in board.groups) g.copyWith(items: g.items.where((i) => i.id != itemId).toList()),
-        ]),
+        mutate: (board) => board.withoutItem(itemId),
         call: () => _repo.archiveItem(itemId),
+      );
+
+  /// Trash: hidden, purged after 30 days unless restored.
+  Future<void> trashItem(String itemId) => _optimistic(
+        mutate: (board) => board.withoutItem(itemId),
+        call: () => _repo.trashItem(itemId),
       );
 
   Future<void> duplicateItem(String itemId) async {
@@ -236,6 +314,13 @@ class BoardController extends AutoDisposeFamilyAsyncNotifier<BoardDetail, String
 
     final current = _board;
     if (current == null) return;
+    if (copy.parentItemId != null) {
+      state = AsyncData(current.withItem(
+        copy.parentItemId!,
+        (p) => p.copyWith(subitems: _insertAfter(p.subitems, itemId, copy)),
+      ));
+      return;
+    }
     state = AsyncData(current.copyWith(groups: [
       for (final g in current.groups)
         if (g.items.any((i) => i.id == itemId))
@@ -272,6 +357,21 @@ class BoardController extends AutoDisposeFamilyAsyncNotifier<BoardDetail, String
     );
   }
 
+  /// Reorders a subitem among its siblings (null = first).
+  Future<void> moveSubitem({required String parentItemId, required String itemId, String? afterItemId}) async {
+    final board = _board;
+    if (board == null) return;
+    final moving = board.findItem(itemId);
+    if (moving == null) return;
+    await _optimistic(
+      mutate: (source) => source.withItem(
+        parentItemId,
+        (p) => p.copyWith(subitems: _placeAfter(p.subitems.where((s) => s.id != itemId).toList(), afterItemId, moving)),
+      ),
+      call: () => _repo.moveItem(itemId: itemId, afterItemId: afterItemId),
+    );
+  }
+
   Future<void> setCell({
     required String itemId,
     required String columnId,
@@ -288,6 +388,29 @@ class BoardController extends AutoDisposeFamilyAsyncNotifier<BoardDetail, String
         state = AsyncData(current.withItem(itemId, (item) => item.withCell(columnId, stored)));
       },
     );
+  }
+
+  /// Applies one action to many items in a single request, then re-reads the
+  /// board (the server emits a single batch event rather than per-item ones).
+  Future<int> batch({
+    required List<String> itemIds,
+    required String action,
+    String? groupId,
+    String? columnId,
+    Map<String, dynamic>? value,
+  }) async {
+    final board = _board;
+    if (board == null) return 0;
+    final affected = await _repo.batch(
+      boardId: board.id,
+      itemIds: itemIds,
+      action: action,
+      groupId: groupId,
+      columnId: columnId,
+      value: value,
+    );
+    await _refetch();
+    return affected;
   }
 
   // ------------------------------------------------------------------- groups
@@ -320,6 +443,23 @@ class BoardController extends AutoDisposeFamilyAsyncNotifier<BoardDetail, String
         call: () => _repo.deleteGroup(groupId),
       );
 
+  /// Reorders a group (null = first).
+  Future<void> moveGroup({required String groupId, String? afterGroupId}) async {
+    final board = _board;
+    if (board == null) return;
+    final moving = board.groups.where((g) => g.id == groupId).firstOrNull;
+    if (moving == null) return;
+    await _optimistic(
+      mutate: (source) {
+        final rest = source.groups.where((g) => g.id != groupId).toList();
+        final index = afterGroupId == null ? 0 : rest.indexWhere((g) => g.id == afterGroupId) + 1;
+        rest.insert(index.clamp(0, rest.length), moving);
+        return source.copyWith(groups: rest);
+      },
+      call: () => _repo.moveGroup(groupId: groupId, afterGroupId: afterGroupId),
+    );
+  }
+
   /// Collapse state is per-user UI sugar; it is persisted but never blocks.
   Future<void> toggleCollapsed(String groupId) async {
     final board = _board;
@@ -336,10 +476,21 @@ class BoardController extends AutoDisposeFamilyAsyncNotifier<BoardDetail, String
 
   // ------------------------------------------------------------------ columns
 
-  Future<void> addColumn({required String type, required String title}) async {
+  Future<void> addColumn({
+    required String type,
+    required String title,
+    String scope = 'items',
+    Map<String, dynamic>? settings,
+  }) async {
     final board = _board;
     if (board == null) return;
-    final created = await _repo.createColumn(boardId: board.id, type: type, title: title);
+    final created = await _repo.createColumn(
+      boardId: board.id,
+      type: type,
+      title: title,
+      scope: scope,
+      settings: settings,
+    );
     final current = _board;
     if (current == null) return;
     state = AsyncData(current.copyWith(columns: [...current.columns, created]));
@@ -350,15 +501,20 @@ class BoardController extends AutoDisposeFamilyAsyncNotifier<BoardDetail, String
           columns: board.columns.where((c) => c.id != columnId).toList(),
           groups: [
             for (final g in board.groups)
-              g.copyWith(items: [for (final i in g.items) i.withCell(columnId, null)]),
+              g.copyWith(items: [
+                for (final i in g.items)
+                  i.withCell(columnId, null).copyWith(
+                    subitems: [for (final s in i.subitems) s.withCell(columnId, null)],
+                  ),
+              ]),
           ],
         ),
         call: () => _repo.deleteColumn(columnId),
       );
 
-  /// Replaces a column's choice set (status labels, dropdown/tags options).
-  /// Cell values referencing a removed id are left untouched server-side and
-  /// simply stop rendering, so a refetch keeps the board honest.
+  /// Replaces a column's settings (choices, unit, summary mode, ...).
+  /// Cell values referencing a removed choice simply stop rendering, so a
+  /// refetch keeps the board honest.
   Future<void> updateColumnSettings(String columnId, Map<String, dynamic> settings) async {
     final board = _board;
     if (board == null) return;
@@ -368,14 +524,119 @@ class BoardController extends AutoDisposeFamilyAsyncNotifier<BoardDetail, String
 
   Future<void> renameColumn(String columnId, String title) => _optimistic(
         mutate: (board) => board.copyWith(columns: [
-          for (final c in board.columns)
-            if (c.id == columnId)
-              BoardColumn(id: c.id, type: c.type, title: title, settings: c.settings, position: c.position)
-            else
-              c,
+          for (final c in board.columns) if (c.id == columnId) c.copyWith(title: title) else c,
         ]),
         call: () => _repo.updateColumn(columnId, title: title),
       );
+
+  /// Reorders a column within its scope (null = first).
+  Future<void> moveColumn({required String columnId, String? afterColumnId}) async {
+    final board = _board;
+    if (board == null) return;
+    final moving = board.columns.where((c) => c.id == columnId).firstOrNull;
+    if (moving == null) return;
+    await _optimistic(
+      mutate: (source) {
+        final sameScope = source.columns.where((c) => c.scope == moving.scope && c.id != columnId).toList();
+        final others = source.columns.where((c) => c.scope != moving.scope).toList();
+        final index = afterColumnId == null ? 0 : sameScope.indexWhere((c) => c.id == afterColumnId) + 1;
+        sameScope.insert(index.clamp(0, sameScope.length), moving);
+        return source.copyWith(columns: moving.scope == 'items' ? [...sameScope, ...others] : [...others, ...sameScope]);
+      },
+      call: () => _repo.moveColumn(columnId: columnId, afterColumnId: afterColumnId),
+    );
+  }
+
+  // -------------------------------------------------------------------- views
+
+  Future<BoardView?> createView({
+    required String type,
+    required String name,
+    Map<String, dynamic>? config,
+    bool? isDefault,
+  }) async {
+    final board = _board;
+    if (board == null) return null;
+    final created = await _repo.createView(board.id, type: type, name: name, config: config, isDefault: isDefault);
+    final current = _board;
+    if (current == null) return created;
+    state = AsyncData(current.copyWith(views: [
+      for (final v in current.views) if (created.isDefault) v.copyWith(isDefault: false) else v,
+      created,
+    ]));
+    return created;
+  }
+
+  /// Saves a view's config (filters, sort, hidden columns, colors) optimistically.
+  Future<void> updateViewConfig(String viewId, Map<String, dynamic> config) => _optimistic<BoardView>(
+        mutate: (board) => board.copyWith(views: [
+          for (final v in board.views) if (v.id == viewId) v.copyWith(config: config) else v,
+        ]),
+        call: () => _repo.updateView(viewId, config: config),
+        reconcile: (stored) {
+          final current = _board;
+          if (current == null) return;
+          state = AsyncData(current.copyWith(views: [
+            for (final v in current.views) if (v.id == viewId) stored else v,
+          ]));
+        },
+      );
+
+  Future<void> renameView(String viewId, String name) => _optimistic(
+        mutate: (board) => board.copyWith(views: [
+          for (final v in board.views) if (v.id == viewId) v.copyWith(name: name) else v,
+        ]),
+        call: () => _repo.updateView(viewId, name: name),
+      );
+
+  Future<void> setDefaultView(String viewId) => _optimistic(
+        mutate: (board) => board.copyWith(views: [
+          for (final v in board.views) v.copyWith(isDefault: v.id == viewId),
+        ]),
+        call: () => _repo.updateView(viewId, isDefault: true),
+      );
+
+  Future<BoardView?> duplicateView(String viewId) async {
+    final board = _board;
+    if (board == null) return null;
+    final copy = await _repo.duplicateView(viewId);
+    final current = _board;
+    if (current == null) return copy;
+    final index = current.views.indexWhere((v) => v.id == viewId);
+    final next = [...current.views];
+    next.insert(index == -1 ? next.length : index + 1, copy);
+    state = AsyncData(current.copyWith(views: next));
+    return copy;
+  }
+
+  Future<void> deleteView(String viewId) async {
+    await _optimistic(
+      mutate: (board) {
+        final remaining = board.views.where((v) => v.id != viewId).toList();
+        final wasDefault = board.views.any((v) => v.id == viewId && v.isDefault);
+        return board.copyWith(views: [
+          for (final (i, v) in remaining.indexed) if (wasDefault && i == 0) v.copyWith(isDefault: true) else v,
+        ]);
+      },
+      call: () => _repo.deleteView(viewId),
+    );
+  }
+
+  Future<void> moveView({required String viewId, String? afterViewId}) async {
+    final board = _board;
+    if (board == null) return;
+    final moving = board.views.where((v) => v.id == viewId).firstOrNull;
+    if (moving == null) return;
+    await _optimistic(
+      mutate: (source) {
+        final rest = source.views.where((v) => v.id != viewId).toList();
+        final index = afterViewId == null ? 0 : rest.indexWhere((v) => v.id == afterViewId) + 1;
+        rest.insert(index.clamp(0, rest.length), moving);
+        return source.copyWith(views: rest);
+      },
+      call: () => _repo.moveView(viewId: viewId, afterViewId: afterViewId),
+    );
+  }
 
   // -------------------------------------------------------------------- board
 

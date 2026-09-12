@@ -21,6 +21,28 @@ const _templateIcons = <String, IconData>{
   'inbox': Icons.inbox_outlined,
 };
 
+/// The three board privacy levels (matching the monday.com model).
+const boardTypeOptions = <({String key, String label, String description, IconData icon})>[
+  (
+    key: 'main',
+    label: 'Main',
+    description: 'Visible to everyone in your account',
+    icon: Icons.public_rounded,
+  ),
+  (
+    key: 'private',
+    label: 'Private',
+    description: 'Only people you invite can see it',
+    icon: Icons.lock_outline_rounded,
+  ),
+  (
+    key: 'shareable',
+    label: 'Shareable',
+    description: 'Invite-only — the board type guests can join',
+    icon: Icons.link_rounded,
+  ),
+];
+
 /// Template gallery + name entry, then creates the board and opens it.
 class CreateBoardScreen extends ConsumerStatefulWidget {
   const CreateBoardScreen({super.key});
@@ -32,6 +54,7 @@ class CreateBoardScreen extends ConsumerStatefulWidget {
 class _CreateBoardScreenState extends ConsumerState<CreateBoardScreen> {
   final _name = TextEditingController();
   String _selectedTemplate = 'blank';
+  String _type = 'main';
   String? _workspaceId;
   bool _creating = false;
 
@@ -50,6 +73,7 @@ class _CreateBoardScreenState extends ConsumerState<CreateBoardScreen> {
             name: name,
             template: _selectedTemplate,
             workspaceId: _workspaceId,
+            type: _type,
           );
       // The new board changes Home's lists and the setup checklist.
       ref.invalidate(homeOverviewProvider);
@@ -64,6 +88,38 @@ class _CreateBoardScreenState extends ConsumerState<CreateBoardScreen> {
         setState(() => _creating = false);
         showDfToast(context, e.message, icon: Icons.error_outline_rounded);
       }
+    }
+  }
+
+  Future<void> _deleteTemplate(BoardTemplate template) async {
+    final id = template.id;
+    if (id == null) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('Delete template "${template.name}"?', style: Theme.of(dialogContext).textTheme.titleMedium),
+        content: Text(
+          'Boards already created from it are not affected.',
+          style: Theme.of(dialogContext).textTheme.bodyMedium,
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Delete', style: TextStyle(color: DfColors.danger)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    try {
+      await ref.read(boardRepositoryProvider).deleteTemplate(id);
+      ref.invalidate(templatesProvider);
+      if (!mounted) return;
+      if (_selectedTemplate == template.key) setState(() => _selectedTemplate = 'blank');
+      showDfToast(context, 'Template deleted');
+    } on ApiException catch (e) {
+      if (mounted) showDfToast(context, e.message, icon: Icons.error_outline_rounded);
     }
   }
 
@@ -109,6 +165,18 @@ class _CreateBoardScreenState extends ConsumerState<CreateBoardScreen> {
                     ),
               orElse: () => const SizedBox.shrink(),
             ),
+            Text('Privacy', style: text.titleMedium),
+            const SizedBox(height: DfSpacing.xs),
+            for (final option in boardTypeOptions)
+              Padding(
+                padding: const EdgeInsets.only(bottom: DfSpacing.xs),
+                child: _TypeCard(
+                  option: option,
+                  selected: option.key == _type,
+                  onTap: () => setState(() => _type = option.key),
+                ),
+              ),
+            const SizedBox(height: DfSpacing.sm),
             Text('Start from a template', style: text.titleMedium),
             const SizedBox(height: DfSpacing.xs),
             templates.when(
@@ -129,14 +197,31 @@ class _CreateBoardScreenState extends ConsumerState<CreateBoardScreen> {
                   ),
                 ]),
               ),
-              data: (list) => Column(children: [
-                for (final template in list)
-                  _TemplateCard(
-                    template: template,
-                    selected: template.key == _selectedTemplate,
-                    onTap: () => setState(() => _selectedTemplate = template.key),
-                  ),
-              ]),
+              data: (list) {
+                final builtIn = list.where((t) => !t.isCustom).toList();
+                final custom = list.where((t) => t.isCustom).toList();
+                return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  for (final template in builtIn)
+                    _TemplateCard(
+                      template: template,
+                      selected: template.key == _selectedTemplate,
+                      onTap: () => setState(() => _selectedTemplate = template.key),
+                    ),
+                  if (custom.isNotEmpty) ...[
+                    const SizedBox(height: DfSpacing.sm),
+                    Text('Your templates', style: text.titleMedium),
+                    Text('Saved from boards in this account', style: text.bodySmall),
+                    const SizedBox(height: DfSpacing.xs),
+                    for (final template in custom)
+                      _TemplateCard(
+                        template: template,
+                        selected: template.key == _selectedTemplate,
+                        onTap: () => setState(() => _selectedTemplate = template.key),
+                        onDelete: () => _deleteTemplate(template),
+                      ),
+                  ],
+                ]);
+              },
             ),
           ],
         ),
@@ -155,10 +240,10 @@ class _CreateBoardScreenState extends ConsumerState<CreateBoardScreen> {
   }
 }
 
-class _TemplateCard extends StatelessWidget {
-  const _TemplateCard({required this.template, required this.selected, required this.onTap});
+class _TypeCard extends StatelessWidget {
+  const _TypeCard({required this.option, required this.selected, required this.onTap});
 
-  final BoardTemplate template;
+  final ({String key, String label, String description, IconData icon}) option;
   final bool selected;
   final VoidCallback onTap;
 
@@ -166,7 +251,63 @@ class _TemplateCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final text = Theme.of(context).textTheme;
     final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    return Material(
+      color: selected
+          ? (isDark ? DfColors.primary.withValues(alpha: 0.18) : DfColors.primarySubtle)
+          : (isDark ? DfColors.surfaceDark : DfColors.surface),
+      borderRadius: BorderRadius.circular(DfRadius.md),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(DfRadius.md),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: DfSpacing.sm, vertical: DfSpacing.xs),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(DfRadius.md),
+            border: Border.all(
+              color: selected ? DfColors.primary : (isDark ? DfColors.borderDark : DfColors.border),
+              width: selected ? 1.5 : 1,
+            ),
+          ),
+          child: Row(children: [
+            Icon(option.icon, size: 20, color: selected ? DfColors.primary : DfColors.textSecondary),
+            const SizedBox(width: DfSpacing.sm),
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(option.label, style: text.titleSmall),
+                Text(option.description, style: text.bodySmall),
+              ]),
+            ),
+            if (selected) const Icon(Icons.check_circle_rounded, color: DfColors.primary, size: 20),
+          ]),
+        ),
+      ),
+    );
+  }
+}
+
+class _TemplateCard extends StatelessWidget {
+  const _TemplateCard({required this.template, required this.selected, required this.onTap, this.onDelete});
+
+  final BoardTemplate template;
+  final bool selected;
+  final VoidCallback onTap;
+
+  /// Custom templates only: offered via long-press and the ⋮ menu.
+  final VoidCallback? onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = Theme.of(context).textTheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     final accent = DfColors.token(template.accentColor);
+    final meta = StringBuffer('${template.columnCount} columns · ${template.groupCount} groups');
+    if (template.isCustom) {
+      meta.write(' · ${template.itemCount} item${template.itemCount == 1 ? '' : 's'}');
+      if (template.createdByName != null && template.createdByName!.isNotEmpty) {
+        meta.write(' · by ${template.createdByName}');
+      }
+    }
 
     return Padding(
       padding: const EdgeInsets.only(bottom: DfSpacing.xs),
@@ -177,6 +318,7 @@ class _TemplateCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(DfRadius.md),
         child: InkWell(
           onTap: onTap,
+          onLongPress: onDelete,
           borderRadius: BorderRadius.circular(DfRadius.md),
           child: Container(
             padding: const EdgeInsets.all(DfSpacing.sm),
@@ -200,16 +342,45 @@ class _TemplateCard extends StatelessWidget {
               const SizedBox(width: DfSpacing.sm),
               Expanded(
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text(template.name, style: text.titleMedium),
-                  Text(template.description, style: text.bodySmall),
+                  Row(children: [
+                    Flexible(
+                      child: Text(template.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: text.titleMedium),
+                    ),
+                    if (template.isCustom)
+                      Padding(
+                        padding: const EdgeInsets.only(left: DfSpacing.xs),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: accent.withValues(alpha: 0.15),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            'Custom',
+                            style: text.labelSmall?.copyWith(color: accent, fontWeight: FontWeight.w600),
+                          ),
+                        ),
+                      ),
+                  ]),
+                  if (template.description.isNotEmpty)
+                    Text(template.description, maxLines: 2, overflow: TextOverflow.ellipsis, style: text.bodySmall),
                   const SizedBox(height: 2),
-                  Text(
-                    '${template.columnCount} columns · ${template.groupCount} groups',
-                    style: text.labelSmall,
-                  ),
+                  Text(meta.toString(), style: text.labelSmall),
                 ]),
               ),
               if (selected) const Icon(Icons.check_circle_rounded, color: DfColors.primary),
+              if (onDelete != null)
+                PopupMenuButton<String>(
+                  icon: const Icon(Icons.more_vert_rounded, size: 20),
+                  tooltip: 'Template options',
+                  onSelected: (_) => onDelete!(),
+                  itemBuilder: (context) => const [
+                    PopupMenuItem(
+                      value: 'delete',
+                      child: Text('Delete template', style: TextStyle(color: DfColors.danger)),
+                    ),
+                  ],
+                ),
             ]),
           ),
         ),

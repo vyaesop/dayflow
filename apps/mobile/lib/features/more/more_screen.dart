@@ -68,14 +68,19 @@ class MoreScreen extends ConsumerWidget {
             onTap: () => context.push('/members'),
           ),
           _MoreTile(
+            icon: Icons.archive_outlined,
+            label: 'Archive & trash',
+            onTap: () => context.push('/archive'),
+          ),
+          _MoreTile(
             icon: Icons.mail_outline_rounded,
             label: 'Accept an invitation',
             onTap: () => _showAcceptInvite(context, ref),
           ),
           _MoreTile(
             icon: Icons.help_outline_rounded,
-            label: 'Help & feedback',
-            onTap: () => showDfToast(context, 'Support center coming soon', icon: Icons.help_outline_rounded),
+            label: 'Help & support',
+            onTap: () => context.push('/support'),
           ),
           const SizedBox(height: DfSpacing.md),
           DfButton(
@@ -91,8 +96,9 @@ class MoreScreen extends ConsumerWidget {
 
 /// Accepts an invitation by pasting its link or token.
 ///
-/// Deep links (`dayflow://invite/<token>`) are not registered yet, so pasting
-/// is the way in; the token is extracted from a full link or used verbatim.
+/// The `/invite/:token` deep link is registered in the router, but a link can
+/// also arrive as plain text (chat, email on another device), so pasting stays
+/// available; the token is extracted from a full link or used verbatim.
 void _showAcceptInvite(BuildContext context, WidgetRef ref) {
   final controller = TextEditingController();
   showDialog<void>(

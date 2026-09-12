@@ -29,6 +29,27 @@ class ItemRepository {
     return (liked: json['liked'] as bool? ?? false, likesCount: json['likesCount'] as int? ?? 0);
   }
 
+  /// Toggles one emoji reaction; returns the update's full reaction list.
+  Future<List<Reaction>> toggleReaction(String updateId, String emoji) async {
+    final json = await _api.post('/updates/$updateId/reactions', body: {'emoji': emoji});
+    return (json['reactions'] as List<dynamic>? ?? const [])
+        .map((r) => Reaction.fromJson(r as Map<String, dynamic>))
+        .toList();
+  }
+
+  // --------------------------------------------------------- board discussion
+
+  Future<List<ItemUpdate>> boardUpdates(String boardId) async {
+    final list = await _api.getList('/boards/$boardId/updates');
+    return list.map((u) => ItemUpdate.fromJson(u as Map<String, dynamic>)).toList();
+  }
+
+  Future<ItemUpdate> postBoardUpdate({required String boardId, required String body, String? parentId}) async =>
+      ItemUpdate.fromJson(await _api.post('/boards/$boardId/updates', body: {
+        'body': body,
+        'parentId': ?parentId,
+      }));
+
   Future<bool> toggleBookmark(String updateId) async {
     final json = await _api.post('/updates/$updateId/bookmark');
     return json['bookmarked'] as bool? ?? false;
@@ -49,15 +70,18 @@ class ItemRepository {
     return list.map((f) => AppFile.fromJson(f as Map<String, dynamic>)).toList();
   }
 
+  /// Uploads a file to an item, an update, or (with [columnId]) a Files column cell.
   Future<AppFile> uploadFile({
     required List<int> bytes,
     required String filename,
     String? itemId,
     String? updateId,
+    String? columnId,
   }) async =>
       AppFile.fromJson(await _api.postMultipart('/files', bytes: bytes, filename: filename, fields: {
         'itemId': ?itemId,
         'updateId': ?updateId,
+        'columnId': ?columnId,
       }));
 
   Future<void> deleteFile(String fileId) => _api.delete('/files/$fileId');

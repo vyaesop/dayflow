@@ -30,8 +30,16 @@ class BoardEvent {
   Map<String, dynamic>? get value => data['value'] as Map<String, dynamic>?;
 }
 
+/// Health of the live-updates link, surfaced to the UI so board screens can
+/// fall back to polling (and say so) instead of silently going stale.
+enum RealtimeStatus { idle, connecting, connected, offline }
+
 /// Maintains one WebSocket to `/v1/realtime`, re-subscribing and reconnecting
 /// with backoff. Board controllers subscribe to the boards they display.
+///
+/// Authentication happens via the first frame (`{action:'auth', token}`)
+/// rather than a query parameter, keeping the JWT out of URLs and logs. The
+/// server answers `{type:'ready'}` before subscriptions are honored.
 class RealtimeClient {
   RealtimeClient._();
   static final instance = RealtimeClient._();
@@ -41,6 +49,7 @@ class RealtimeClient {
   Timer? _reconnect;
   int _attempt = 0;
   bool _disposed = false;
+  bool _ready = false;
 
   final _events = StreamController<BoardEvent>.broadcast();
   final _boards = <String>{};
@@ -48,14 +57,17 @@ class RealtimeClient {
   /// Broadcast stream of every board event this connection receives.
   Stream<BoardEvent> get events => _events.stream;
 
-  bool get isConnected => _channel != null;
+  /// Current link state; listen to drive "live vs. auto-refresh" UI.
+  final ValueNotifier<RealtimeStatus> status = ValueNotifier(RealtimeStatus.idle);
+
+  bool get isConnected => status.value == RealtimeStatus.connected;
 
   /// Starts watching [boardId], connecting on first use.
   void subscribe(String boardId) {
     _boards.add(boardId);
     if (_channel == null) {
       _connect();
-    } else {
+    } else if (_ready) {
       _send({'action': 'subscribe', 'boardId': boardId});
     }
   }
@@ -64,13 +76,30 @@ class RealtimeClient {
     _boards.remove(boardId);
     _send({'action': 'unsubscribe', 'boardId': boardId});
     // Nothing left to watch — drop the socket rather than idling.
-    if (_boards.isEmpty) _teardown();
+    if (_boards.isEmpty) {
+      _teardown();
+      status.value = RealtimeStatus.idle;
+    }
   }
 
   /// Forces a fresh connection, e.g. after an account switch changes the token.
   void reset() {
+    _attempt = 0;
     _teardown();
-    if (_boards.isNotEmpty) _connect();
+    if (_boards.isNotEmpty) {
+      _connect();
+    } else {
+      status.value = RealtimeStatus.idle;
+    }
+  }
+
+  /// Retries immediately (app resumed, connectivity regained) instead of
+  /// waiting out the current backoff window.
+  void reconnectNow() {
+    if (_disposed || _boards.isEmpty || isConnected) return;
+    _attempt = 0;
+    _teardown();
+    _connect();
   }
 
   void dispose() {
@@ -83,22 +112,21 @@ class RealtimeClient {
     final token = TokenStore.instance.accessToken;
     if (token == null || _disposed) return;
 
+    status.value = RealtimeStatus.connecting;
     final origin = apiBaseUrl().replaceFirst(RegExp(r'^http'), 'ws');
-    final uri = Uri.parse('$origin/v1/realtime?token=${Uri.encodeComponent(token)}');
 
     try {
-      final channel = WebSocketChannel.connect(uri);
+      final channel = WebSocketChannel.connect(Uri.parse('$origin/v1/realtime'));
       _channel = channel;
+      _ready = false;
       _subscription = channel.stream.listen(
         _onFrame,
         onError: (Object error) => _scheduleReconnect(),
         onDone: _scheduleReconnect,
         cancelOnError: true,
       );
-      // Re-declare interest; the server keeps no state across connections.
-      for (final boardId in _boards) {
-        _send({'action': 'subscribe', 'boardId': boardId});
-      }
+      // First frame proves who we are; subscriptions wait for `ready`.
+      _send({'action': 'auth', 'token': token});
     } catch (_) {
       _scheduleReconnect();
     }
@@ -109,7 +137,16 @@ class RealtimeClient {
     try {
       final decoded = jsonDecode(raw as String) as Map<String, dynamic>;
       final type = decoded['type'] as String?;
-      if (type == null || type == 'ready') return;
+      if (type == 'ready') {
+        _ready = true;
+        status.value = RealtimeStatus.connected;
+        // Re-declare interest; the server keeps no state across connections.
+        for (final boardId in _boards) {
+          _send({'action': 'subscribe', 'boardId': boardId});
+        }
+        return;
+      }
+      if (type == null) return;
       _events.add(BoardEvent(type, decoded));
     } catch (_) {
       // Ignore frames we cannot parse rather than killing the stream.
@@ -127,6 +164,7 @@ class RealtimeClient {
   void _scheduleReconnect() {
     _teardown();
     if (_disposed || _boards.isEmpty) return;
+    status.value = RealtimeStatus.offline;
 
     // Exponential backoff, capped at 30s.
     _attempt = (_attempt + 1).clamp(1, 6);
@@ -144,5 +182,6 @@ class RealtimeClient {
     _subscription = null;
     _channel?.sink.close();
     _channel = null;
+    _ready = false;
   }
 }

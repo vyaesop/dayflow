@@ -359,12 +359,24 @@ class _BoardTileState extends ConsumerState<_BoardTile> {
           const SizedBox(width: DfSpacing.sm),
           Expanded(
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(
-                widget.board.name,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.titleMedium,
-              ),
+              Row(children: [
+                Flexible(
+                  child: Text(
+                    widget.board.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                ),
+                if (widget.board.type != 'main') ...[
+                  const SizedBox(width: DfSpacing.xxs),
+                  Icon(
+                    widget.board.type == 'private' ? Icons.lock_outline_rounded : Icons.link_rounded,
+                    size: 14,
+                    color: DfColors.textTertiary,
+                  ),
+                ],
+              ]),
               if (widget.board.workspaceName.isNotEmpty)
                 Text(widget.board.workspaceName, style: Theme.of(context).textTheme.bodySmall),
             ]),

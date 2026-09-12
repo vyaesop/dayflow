@@ -1,38 +1,120 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import '../../core/api/api_client.dart';
 import '../../core/api/api_exception.dart';
+import '../../core/auth/auth_controller.dart';
 import '../../core/models/models.dart';
+import '../../core/realtime/realtime_client.dart';
 import '../../core/theme/motion.dart';
 import '../../core/theme/tokens.dart';
 import '../../ui/widgets/df_avatar.dart';
 import '../../ui/widgets/df_button.dart';
 import '../../ui/widgets/df_misc.dart';
 import '../home/home_providers.dart';
+import '../item/item_repository.dart';
 import '../members/members_providers.dart';
+import 'batch_bar.dart';
+import 'board_actions.dart';
 import 'board_controller.dart';
 import 'board_filters.dart';
+import 'board_members_sheet.dart';
 import 'cell_editors.dart';
-import 'column_settings_sheet.dart';
+import 'columns_sheet.dart';
+import 'conditional_colors_sheet.dart';
+import 'create_board_screen.dart' show boardTypeOptions;
+import 'filter_builder_sheet.dart';
+import 'sort_sheet.dart';
+import 'subitem_rows.dart';
+import 'summary_footer.dart';
+import 'view_engine.dart';
+import 'view_sheets.dart';
 
 const _groupColors = ['blue', 'purple', 'green', 'pink', 'amber', 'red', 'teal', 'indigo'];
 
-const _columnTypes = <({String type, String label, IconData icon})>[
-  (type: 'status', label: 'Status', icon: Icons.donut_large_rounded),
-  (type: 'people', label: 'People', icon: Icons.person_outline_rounded),
-  (type: 'date', label: 'Date', icon: Icons.event_rounded),
-  (type: 'text', label: 'Text', icon: Icons.notes_rounded),
-  (type: 'number', label: 'Number', icon: Icons.numbers_rounded),
-  (type: 'checkbox', label: 'Checkbox', icon: Icons.check_box_outlined),
-  (type: 'link', label: 'Link', icon: Icons.link_rounded),
-  (type: 'timeline', label: 'Timeline', icon: Icons.date_range_rounded),
-];
+/// Placeholder id of a row whose create request is still in flight.
+const pendingItemId = '__pending__';
 
-/// Editable board: groups, items, and typed cells.
+// ------------------------------------------------------------------ actions
+
+/// The board mutations the table body needs. `BoardController` satisfies it
+/// through [ControllerTableActions]; tests pass a fake.
+abstract class BoardTableActions {
+  Future<void> addItem({required String groupId, required String name});
+  Future<BoardItem?> addSubitem({required String parentItemId, required String name});
+  Future<void> renameItem(String itemId, String name);
+  Future<void> duplicateItem(String itemId);
+  Future<void> archiveItem(String itemId);
+  Future<void> trashItem(String itemId);
+  Future<void> moveItem({required String itemId, required String groupId, String? afterItemId});
+  Future<void> setCell({required String itemId, required String columnId, required Map<String, dynamic>? value});
+  Future<void> addGroup(String title);
+  Future<void> renameGroup(String groupId, String title);
+  Future<void> recolorGroup(String groupId, String color);
+  Future<void> deleteGroup(String groupId);
+  Future<void> toggleCollapsed(String groupId);
+  Future<void> refresh();
+}
+
+class ControllerTableActions implements BoardTableActions {
+  const ControllerTableActions(this.controller);
+
+  final BoardController controller;
+
+  @override
+  Future<void> addItem({required String groupId, required String name}) =>
+      controller.addItem(groupId: groupId, name: name);
+  @override
+  Future<BoardItem?> addSubitem({required String parentItemId, required String name}) =>
+      controller.addSubitem(parentItemId: parentItemId, name: name);
+  @override
+  Future<void> renameItem(String itemId, String name) => controller.renameItem(itemId, name);
+  @override
+  Future<void> duplicateItem(String itemId) => controller.duplicateItem(itemId);
+  @override
+  Future<void> archiveItem(String itemId) => controller.archiveItem(itemId);
+  @override
+  Future<void> trashItem(String itemId) => controller.trashItem(itemId);
+  @override
+  Future<void> moveItem({required String itemId, required String groupId, String? afterItemId}) =>
+      controller.moveItem(itemId: itemId, groupId: groupId, afterItemId: afterItemId);
+  @override
+  Future<void> setCell({required String itemId, required String columnId, required Map<String, dynamic>? value}) =>
+      controller.setCell(itemId: itemId, columnId: columnId, value: value);
+  @override
+  Future<void> addGroup(String title) => controller.addGroup(title);
+  @override
+  Future<void> renameGroup(String groupId, String title) => controller.renameGroup(groupId, title);
+  @override
+  Future<void> recolorGroup(String groupId, String color) => controller.recolorGroup(groupId, color);
+  @override
+  Future<void> deleteGroup(String groupId) => controller.deleteGroup(groupId);
+  @override
+  Future<void> toggleCollapsed(String groupId) => controller.toggleCollapsed(groupId);
+  @override
+  Future<void> refresh() => controller.refresh();
+}
+
+/// Ids of the top-level items the table currently shows (saved view + quick
+/// filters applied), in display order. Used by "Select all".
+List<String> visibleItemIds(BoardDetail board, ViewConfig config, BoardFilter quickFilter, {String? meUserId}) {
+  final groups = applyView(
+    board,
+    config,
+    ViewContext.forBoard(board, meUserId: meUserId),
+    extraFilter: quickFilter.isActive ? (item) => quickFilter.matches(item, board.columns) : null,
+  );
+  return [
+    for (final g in groups)
+      for (final i in g.items)
+        if (i.id != pendingItemId) i.id,
+  ];
+}
+
+// ------------------------------------------------------------------- screen
+
+/// Editable board: groups, items, and typed cells, shown through a saved view.
 class BoardScreen extends ConsumerStatefulWidget {
   const BoardScreen({super.key, required this.boardId});
 
@@ -46,6 +128,10 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
   final _quickFind = TextEditingController();
   bool _showQuickFind = false;
 
+  /// Non-null while rows are being selected for a batch action.
+  Set<String>? _selected;
+  bool _batchBusy = false;
+
   String get boardId => widget.boardId;
 
   @override
@@ -54,115 +140,120 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
     super.dispose();
   }
 
+  ViewConfig _config(BoardDetail board) {
+    final working = ref.read(workingViewConfigProvider(boardId));
+    if (working != null) return working;
+    final view = resolveActiveView(board, ref.read(activeViewIdProvider(boardId)));
+    return view == null ? const ViewConfig.empty() : ViewConfig.fromJson(view.config);
+  }
+
+  void _setWorking(ViewConfig config) => ref.read(workingViewConfigProvider(boardId).notifier).state = config;
+
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(boardControllerProvider(boardId));
     final controller = ref.read(boardControllerProvider(boardId).notifier);
     final filter = ref.watch(boardFilterProvider(boardId));
+    final activeViewId = ref.watch(activeViewIdProvider(boardId));
+    final working = ref.watch(workingViewConfigProvider(boardId));
+    final auth = ref.watch(authControllerProvider);
+    final meUserId = auth is SignedIn ? auth.me.id : null;
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final selecting = _selected != null;
+
+    final board = state.value;
+    final view = board == null ? null : resolveActiveView(board, activeViewId);
+    final stored = view == null ? const ViewConfig.empty() : ViewConfig.fromJson(view.config);
+    final config = working ?? stored;
+    final dirty = working != null && !viewConfigsEqual(working, stored);
+    final ruleCount = config.filters?.rules.length ?? 0;
 
     return Scaffold(
       appBar: AppBar(
-        leading: BackButton(onPressed: () => context.pop()),
+        leading: selecting
+            ? IconButton(
+                icon: const Icon(Icons.close_rounded),
+                tooltip: 'Cancel selection',
+                onPressed: () => setState(() => _selected = null),
+              )
+            : BackButton(onPressed: () => context.pop()),
         centerTitle: false,
         titleSpacing: 0,
-        title: state.maybeWhen(
-          data: (board) => GestureDetector(
-            onTap: () => _renameBoard(context, controller, board),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Text(board.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-                Text(
-                  '${board.workspaceName} · ${board.itemCount} items',
-                  style: Theme.of(context).textTheme.labelSmall,
+        title: selecting
+            ? Text('${_selected!.length} selected')
+            : state.maybeWhen(
+                data: (board) => GestureDetector(
+                  onTap: board.canEdit ? () => _renameBoard(context, controller, board) : null,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(board.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+                      Row(mainAxisSize: MainAxisSize.min, children: [
+                        if (board.type != 'main') ...[
+                          Icon(
+                            board.type == 'private' ? Icons.lock_outline_rounded : Icons.link_rounded,
+                            size: 11,
+                            color: DfColors.textTertiary,
+                          ),
+                          const SizedBox(width: 3),
+                        ],
+                        Flexible(
+                          child: Text(
+                            '${view?.name ?? board.workspaceName} · ${board.itemCount} items',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.labelSmall,
+                          ),
+                        ),
+                      ]),
+                    ],
+                  ),
+                ),
+                orElse: () => const Text('Board'),
+              ),
+        actions: [
+          if (selecting && board != null)
+            TextButton(
+              onPressed: () => setState(
+                () => _selected = visibleItemIds(board, config, filter, meUserId: meUserId).toSet(),
+              ),
+              child: const Text('Select all'),
+            )
+          else
+            ...state.maybeWhen(
+              data: (board) => [
+                IconButton(
+                  icon: Icon(
+                    board.isFavorite ? Icons.star_rounded : Icons.star_border_rounded,
+                    color: board.isFavorite ? DfColors.accentAmber : null,
+                  ),
+                  tooltip: board.isFavorite ? 'Remove from favorites' : 'Add to favorites',
+                  onPressed: () => _guard(context, () async {
+                    await controller.toggleFavorite();
+                    ref.invalidate(homeOverviewProvider);
+                    ref.invalidate(workspacesProvider);
+                  }),
+                ),
+                IconButton(
+                  icon: Icon(viewTypeIcon(view?.type ?? 'table')),
+                  tooltip: 'Views',
+                  onPressed: () => showViewSwitcherSheet(
+                    context,
+                    ref,
+                    board: board,
+                    activeViewId: activeViewId,
+                    currentConfig: config,
+                  ),
+                ),
+                PopupMenuButton<String>(
+                  icon: const Icon(Icons.more_vert_rounded),
+                  onSelected: (action) => _onBoardAction(context, action, board, controller, view, config),
+                  itemBuilder: (context) => _boardMenuItems(board),
                 ),
               ],
+              orElse: () => const <Widget>[],
             ),
-          ),
-          orElse: () => const Text('Board'),
-        ),
-        actions: [
-          ...state.maybeWhen(
-            data: (board) => [
-              IconButton(
-                icon: Icon(
-                  board.isFavorite ? Icons.star_rounded : Icons.star_border_rounded,
-                  color: board.isFavorite ? DfColors.accentAmber : null,
-                ),
-                tooltip: board.isFavorite ? 'Remove from favorites' : 'Add to favorites',
-                onPressed: () => _guard(context, () async {
-                  await controller.toggleFavorite();
-                  ref.invalidate(homeOverviewProvider);
-                  ref.invalidate(workspacesProvider);
-                }),
-              ),
-              // View switcher: Table (here) / Kanban / Calendar.
-              PopupMenuButton<String>(
-                icon: const Icon(Icons.grid_view_outlined),
-                tooltip: 'Change view',
-                onSelected: (view) => switch (view) {
-                  'kanban' => context.push('/boards/$boardId/kanban'),
-                  'calendar' => context.push('/boards/$boardId/calendar'),
-                  _ => null,
-                },
-                itemBuilder: (context) => const [
-                  PopupMenuItem(
-                    value: 'table',
-                    enabled: false,
-                    child: Row(children: [
-                      Icon(Icons.table_rows_outlined, size: 18, color: DfColors.primary),
-                      SizedBox(width: 8),
-                      Text('Main Table'),
-                    ]),
-                  ),
-                  PopupMenuItem(
-                    value: 'kanban',
-                    child: Row(children: [
-                      Icon(Icons.view_kanban_outlined, size: 18),
-                      SizedBox(width: 8),
-                      Text('Kanban'),
-                    ]),
-                  ),
-                  PopupMenuItem(
-                    value: 'calendar',
-                    child: Row(children: [
-                      Icon(Icons.calendar_month_outlined, size: 18),
-                      SizedBox(width: 8),
-                      Text('Calendar'),
-                    ]),
-                  ),
-                ],
-              ),
-              PopupMenuButton<String>(
-                icon: const Icon(Icons.more_vert_rounded),
-                onSelected: (action) => switch (action) {
-                  'group' => _addGroup(context, controller),
-                  'column' => _addColumn(context, controller),
-                  'columns' => _manageColumns(context, controller, board),
-                  'rename' => _renameBoard(context, controller, board),
-                  'info' => _showBoardInfo(context, board),
-                  'export' => _exportCsv(context, board),
-                  'archive' => _archiveBoard(context, board),
-                  _ => null,
-                },
-                itemBuilder: (context) => const [
-                  PopupMenuItem(value: 'group', child: Text('Add group')),
-                  PopupMenuItem(value: 'column', child: Text('Add column')),
-                  PopupMenuItem(value: 'columns', child: Text('Manage columns')),
-                  PopupMenuItem(value: 'rename', child: Text('Rename board')),
-                  PopupMenuItem(value: 'info', child: Text('Board info')),
-                  PopupMenuItem(value: 'export', child: Text('Export to CSV')),
-                  PopupMenuItem(
-                    value: 'archive',
-                    child: Text('Archive board', style: TextStyle(color: DfColors.danger)),
-                  ),
-                ],
-              ),
-            ],
-            orElse: () => const <Widget>[],
-          ),
         ],
       ),
       body: state.when(
@@ -172,6 +263,28 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
           onRetry: () => ref.invalidate(boardControllerProvider(boardId)),
         ),
         data: (board) => Column(children: [
+          // Degraded-link notice: the board still converges via polling, but
+          // people should know edits from others arrive on a delay.
+          ValueListenableBuilder(
+            valueListenable: ref.watch(realtimeStatusProvider),
+            builder: (context, status, _) => status == RealtimeStatus.offline
+                ? Container(
+                    width: double.infinity,
+                    color: DfColors.accentAmber.withValues(alpha: 0.15),
+                    padding: const EdgeInsets.symmetric(horizontal: DfSpacing.md, vertical: DfSpacing.xxs),
+                    child: Row(children: [
+                      const Icon(Icons.sync_rounded, size: 14, color: DfColors.textSecondary),
+                      const SizedBox(width: DfSpacing.xxs),
+                      Expanded(
+                        child: Text(
+                          'Live sync unavailable — refreshing every ${BoardController.pollInterval.inSeconds}s',
+                          style: Theme.of(context).textTheme.labelSmall,
+                        ),
+                      ),
+                    ]),
+                  )
+                : const SizedBox.shrink(),
+          ),
           // Quick find + filter bar, as on the design's table view.
           Container(
             padding: const EdgeInsets.fromLTRB(DfSpacing.md, DfSpacing.xxs, DfSpacing.xs, DfSpacing.xxs),
@@ -218,8 +331,7 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
                         icon: const Icon(Icons.close_rounded, size: 16),
                         onPressed: () {
                           _quickFind.clear();
-                          ref.read(boardFilterProvider(boardId).notifier).state =
-                              filter.copyWith(query: '');
+                          ref.read(boardFilterProvider(boardId).notifier).state = filter.copyWith(query: '');
                         },
                       ),
                   ]),
@@ -236,9 +348,7 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
                 ),
                 tooltip: 'Quick filters',
                 onPressed: () async {
-                  final members = await ref
-                      .read(assignableMembersProvider.future)
-                      .catchError((Object _) => board.members);
+                  final members = await _assignable(board);
                   if (!context.mounted) return;
                   await showBoardFilterSheet(
                     context: context,
@@ -249,17 +359,219 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
                   );
                 },
               ),
+              // Saved-view filters, with a rule-count badge.
+              IconButton(
+                icon: Badge(
+                  isLabelVisible: ruleCount > 0,
+                  label: Text('$ruleCount'),
+                  child: Icon(
+                    Icons.filter_list_rounded,
+                    color: ruleCount > 0 ? DfColors.primary : DfColors.textSecondary,
+                  ),
+                ),
+                tooltip: 'Filters',
+                onPressed: () => _editFilters(context, board, config),
+              ),
             ]),
           ),
+          if (config.hasSort || dirty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(DfSpacing.md, 0, DfSpacing.md, DfSpacing.xxs),
+              child: Wrap(spacing: DfSpacing.xs, runSpacing: DfSpacing.xxs, children: [
+                if (config.hasSort)
+                  _Pill(
+                    icon: Icons.swap_vert_rounded,
+                    label: 'Sorted',
+                    onTap: () => _editSort(context, board, config),
+                  ),
+                if (dirty)
+                  _UnsavedPill(
+                    canSave: board.canEdit && view != null,
+                    onSave: () => _guard(context, () async {
+                      await controller.updateViewConfig(view!.id, config.toJson());
+                      ref.read(workingViewConfigProvider(boardId).notifier).state = null;
+                      if (context.mounted) showDfToast(context, 'View saved');
+                    }),
+                    onDiscard: () => ref.read(workingViewConfigProvider(boardId).notifier).state = null,
+                  ),
+              ]),
+            ),
           Expanded(
             child: RefreshIndicator(
               onRefresh: controller.refresh,
-              child: _BoardBody(board: board, controller: controller, filter: filter),
+              child: BoardTableBody(
+                board: board,
+                actions: ControllerTableActions(controller),
+                config: config,
+                quickFilter: filter,
+                meUserId: meUserId,
+                selectedIds: _selected,
+                onToggleSelected: (id) => setState(() {
+                  final next = {..._selected ?? const <String>{}};
+                  if (!next.remove(id)) next.add(id);
+                  _selected = next;
+                }),
+              ),
             ),
           ),
         ]),
       ),
+      bottomNavigationBar: selecting && board != null
+          ? BatchBar(
+              count: _selected!.length,
+              busy: _batchBusy,
+              onSetStatus: board.itemColumns.any((c) => c.type == 'status')
+                  ? () => _batchSetStatus(context, board, controller)
+                  : null,
+              onAssign: board.itemColumns.any((c) => c.type == 'people')
+                  ? () => _batchAssign(context, board, controller)
+                  : null,
+              onMoveToGroup: () => _batchMove(context, board, controller),
+              onDuplicate: () => _runBatch(context, controller, action: 'duplicate'),
+              onArchive: () async {
+                final confirmed = await _confirm(
+                  context,
+                  title: 'Archive ${_selected!.length} item(s)?',
+                  message: 'They disappear from the board and can be restored from Archived items.',
+                  confirmLabel: 'Archive',
+                );
+                if (confirmed && context.mounted) await _runBatch(context, controller, action: 'archive');
+              },
+              onDelete: () async {
+                final confirmed = await _confirm(
+                  context,
+                  title: 'Delete ${_selected!.length} item(s)?',
+                  message: 'They move to the trash and are deleted for good after 30 days.',
+                  destructive: true,
+                );
+                if (confirmed && context.mounted) await _runBatch(context, controller, action: 'trash');
+              },
+            )
+          : null,
     );
+  }
+
+  Future<List<BoardMember>> _assignable(BoardDetail board) =>
+      ref.read(assignableMembersProvider.future).catchError((Object _) => board.members);
+
+  // -------------------------------------------------------------- board menu
+
+  List<PopupMenuEntry<String>> _boardMenuItems(BoardDetail board) => [
+        if (board.canEdit) ...[
+          const PopupMenuItem(value: 'group', child: Text('Add group')),
+          const PopupMenuItem(value: 'column', child: Text('Add column')),
+        ],
+        const PopupMenuItem(value: 'columns', child: Text('Columns')),
+        const PopupMenuItem(value: 'views', child: Text('Views')),
+        const PopupMenuItem(value: 'sort', child: Text('Sort')),
+        const PopupMenuItem(value: 'filters', child: Text('Filters')),
+        const PopupMenuItem(value: 'colors', child: Text('Conditional colors')),
+        if (board.canEdit) const PopupMenuItem(value: 'select', child: Text('Select items')),
+        const PopupMenuDivider(),
+        const PopupMenuItem(value: 'members', child: Text('Board members')),
+        const PopupMenuItem(value: 'discussion', child: Text('Board discussion')),
+        const PopupMenuItem(value: 'activity', child: Text('Activity log')),
+        const PopupMenuItem(value: 'archived', child: Text('Archived items')),
+        const PopupMenuDivider(),
+        if (board.canEdit) const PopupMenuItem(value: 'rename', child: Text('Rename board')),
+        if (board.canManage) const PopupMenuItem(value: 'type', child: Text('Change board type')),
+        if (board.canEdit) ...[
+          const PopupMenuItem(value: 'duplicate', child: Text('Duplicate board')),
+          const PopupMenuItem(value: 'template', child: Text('Save as template')),
+        ],
+        const PopupMenuItem(value: 'info', child: Text('Board info')),
+        const PopupMenuItem(value: 'export', child: Text('Export to CSV')),
+        if (board.canEdit) ...[
+          const PopupMenuDivider(),
+          const PopupMenuItem(value: 'archive', child: Text('Archive board')),
+          const PopupMenuItem(
+            value: 'delete',
+            child: Text('Delete board', style: TextStyle(color: DfColors.danger)),
+          ),
+        ],
+      ];
+
+  Future<void> _onBoardAction(
+    BuildContext context,
+    String action,
+    BoardDetail board,
+    BoardController controller,
+    BoardView? view,
+    ViewConfig config,
+  ) async {
+    switch (action) {
+      case 'group':
+        await _addGroup(context, controller);
+      case 'column':
+        final picked = await showAddColumnSheet(context);
+        if (picked == null || !context.mounted) return;
+        await _guard(context, () => controller.addColumn(type: picked.type, title: picked.title));
+      case 'columns':
+        await showColumnsSheet(context, boardId: boardId, config: config, onConfigChanged: _setWorking);
+      case 'views':
+        await showViewSwitcherSheet(
+          context,
+          ref,
+          board: board,
+          activeViewId: ref.read(activeViewIdProvider(boardId)),
+          currentConfig: config,
+        );
+      case 'sort':
+        await _editSort(context, board, config);
+      case 'filters':
+        await _editFilters(context, board, config);
+      case 'colors':
+        final members = await _assignable(board);
+        if (!context.mounted) return;
+        final rules = await showConditionalColorsSheet(
+          context,
+          board: board,
+          members: members,
+          initial: config.conditionalColors,
+        );
+        if (rules == null) return;
+        _setWorking(_config(board).copyWith(conditionalColors: rules));
+      case 'select':
+        setState(() => _selected = {});
+      case 'members':
+        await showBoardMembersSheet(context, ref, boardId: boardId);
+      case 'discussion':
+        await context.push('/boards/$boardId/discussion');
+      case 'activity':
+        await context.push('/boards/$boardId/activity');
+      case 'archived':
+        await context.push('/archive?boardId=$boardId');
+      case 'rename':
+        await _renameBoard(context, controller, board);
+      case 'type':
+        await _changeBoardType(context, board);
+      case 'duplicate':
+        await showDuplicateBoardSheet(context, ref, board);
+      case 'template':
+        await showSaveAsTemplateSheet(context, ref, board);
+      case 'info':
+        await _showBoardInfo(context, board);
+      case 'export':
+        await _exportCsv(context, board, view);
+      case 'archive':
+        await _archiveBoard(context, board);
+      case 'delete':
+        await _deleteBoard(context, board);
+    }
+  }
+
+  Future<void> _editFilters(BuildContext context, BoardDetail board, ViewConfig config) async {
+    final members = await _assignable(board);
+    if (!context.mounted) return;
+    final group = await showFilterBuilderSheet(context, board: board, members: members, initial: config.filters);
+    if (group == null) return;
+    _setWorking(_config(board).copyWith(filters: () => group.isEmpty ? null : group));
+  }
+
+  Future<void> _editSort(BuildContext context, BoardDetail board, ViewConfig config) async {
+    final rules = await showSortSheet(context, board: board, initial: config.sort);
+    if (rules == null) return;
+    _setWorking(_config(board).copyWith(sort: rules));
   }
 
   Future<void> _showBoardInfo(BuildContext context, BoardDetail board) async {
@@ -277,7 +589,9 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
             ],
             Text(
               '${board.workspaceName} · ${board.type} board\n'
-              '${board.groups.length} groups · ${board.itemCount} items · ${board.columns.length} columns',
+              '${board.groups.length} groups · ${board.itemCount} items · ${board.itemColumns.length} columns'
+              '${board.subitemColumns.isEmpty ? '' : ' · ${board.subitemColumns.length} subitem columns'}'
+              ' · ${board.views.length} view${board.views.length == 1 ? '' : 's'}',
               style: Theme.of(sheetContext).textTheme.bodySmall,
             ),
             if (board.members.isNotEmpty) ...[
@@ -302,9 +616,9 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
     );
   }
 
-  Future<void> _exportCsv(BuildContext context, BoardDetail board) async {
+  Future<void> _exportCsv(BuildContext context, BoardDetail board, BoardView? view) async {
     await _guard(context, () async {
-      final csv = await ApiClient.instance.getText('/boards/${board.id}/export.csv');
+      final csv = await ref.read(boardRepositoryProvider).exportCsv(board.id, viewId: view?.id);
       await Clipboard.setData(ClipboardData(text: csv));
       if (context.mounted) {
         showDfToast(context, 'CSV copied to clipboard (${csv.split('\n').length - 1} rows)');
@@ -316,8 +630,8 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
     final confirmed = await _confirm(
       context,
       title: 'Archive "${board.name}"?',
-      message: 'The board disappears from lists. Its data is kept.',
-      destructive: true,
+      message: 'The board disappears from lists. Its data is kept and it can be restored any time.',
+      confirmLabel: 'Archive',
     );
     if (!confirmed || !context.mounted) return;
     await _guard(context, () async {
@@ -328,10 +642,64 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
     });
   }
 
+  Future<void> _deleteBoard(BuildContext context, BoardDetail board) async {
+    final confirmed = await _confirm(
+      context,
+      title: 'Delete "${board.name}"?',
+      message: 'The board and its ${board.itemCount} items move to the trash and are deleted for good after 30 days.',
+      destructive: true,
+    );
+    if (!confirmed || !context.mounted) return;
+    await _guard(context, () async {
+      await ref.read(boardRepositoryProvider).trashBoard(board.id);
+      ref.invalidate(homeOverviewProvider);
+      ref.invalidate(workspacesProvider);
+      if (context.mounted) context.pop();
+    });
+  }
+
   Future<void> _renameBoard(BuildContext context, BoardController controller, BoardDetail board) async {
     final name = await promptForText(context, title: 'Rename board', initial: board.name);
-    if (name == null || name == board.name || !context.mounted) return;
+    if (name == null || name.isEmpty || name == board.name || !context.mounted) return;
     await _guard(context, () => controller.renameBoard(name));
+  }
+
+  Future<void> _changeBoardType(BuildContext context, BoardDetail board) async {
+    final picked = await showModalBottomSheet<String>(
+      context: context,
+      builder: (sheetContext) => SafeArea(
+        child: ListView(shrinkWrap: true, children: [
+          Padding(
+            padding: const EdgeInsets.all(DfSpacing.md),
+            child: Text('Board type', style: Theme.of(sheetContext).textTheme.titleMedium),
+          ),
+          for (final option in boardTypeOptions)
+            ListTile(
+              leading: Icon(option.icon, size: 20, color: DfColors.primary),
+              title: Text(option.label),
+              subtitle: Text(option.description),
+              trailing: board.type == option.key ? const Icon(Icons.check_rounded, color: DfColors.primary) : null,
+              onTap: () => Navigator.pop(sheetContext, option.key),
+            ),
+        ]),
+      ),
+    );
+    if (picked == null || picked == board.type || !context.mounted) return;
+
+    await _guard(context, () async {
+      await ref.read(boardRepositoryProvider).setBoardType(board.id, picked);
+      await ref.read(boardControllerProvider(board.id).notifier).refresh();
+      ref.invalidate(homeOverviewProvider);
+      ref.invalidate(workspacesProvider);
+      if (context.mounted) {
+        showDfToast(
+          context,
+          picked == 'main'
+              ? 'Board is now visible to everyone in the account'
+              : 'Board is now ${picked == 'private' ? 'private' : 'shareable'} — members only',
+        );
+      }
+    });
   }
 
   Future<void> _addGroup(BuildContext context, BoardController controller) async {
@@ -340,107 +708,69 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
     await _guard(context, () => controller.addGroup(title));
   }
 
-  Future<void> _addColumn(BuildContext context, BoardController controller) async {
-    final picked = await showModalBottomSheet<({String type, String label, IconData icon})>(
-      context: context,
-      builder: (sheetContext) => SafeArea(
-        child: ListView(
-          shrinkWrap: true,
-          children: [
-            Padding(
-              padding: const EdgeInsets.all(DfSpacing.md),
-              child: Text('Add a column', style: Theme.of(sheetContext).textTheme.titleMedium),
-            ),
-            for (final type in _columnTypes)
-              ListTile(
-                leading: Icon(type.icon, color: DfColors.primary),
-                title: Text(type.label),
-                onTap: () => Navigator.pop(sheetContext, type),
-              ),
-          ],
-        ),
-      ),
-    );
-    if (picked == null || !context.mounted) return;
+  // ------------------------------------------------------------------- batch
 
-    final title = await promptForText(context, title: 'Column name', initial: picked.label);
-    if (title == null || title.isEmpty || !context.mounted) return;
-    await _guard(context, () => controller.addColumn(type: picked.type, title: title));
+  Future<void> _batchSetStatus(BuildContext context, BoardDetail board, BoardController controller) async {
+    final column = await pickColumn(
+      context,
+      board.itemColumns.where((c) => c.type == 'status').toList(),
+      title: 'Which status column?',
+    );
+    if (column == null || !context.mounted) return;
+    final labelId = await showStatusLabelPicker(context, column);
+    if (labelId == null || !context.mounted) return;
+    await _runBatch(context, controller, action: 'set_cell', columnId: column.id, value: {'labelId': labelId});
   }
 
-  /// Rename columns, edit their choices, or remove them.
-  Future<void> _manageColumns(BuildContext context, BoardController controller, BoardDetail board) async {
-    await showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      builder: (sheetContext) => SafeArea(
-        child: ListView(
-          shrinkWrap: true,
-          padding: const EdgeInsets.symmetric(vertical: DfSpacing.sm),
-          children: [
-            Padding(
-              padding: const EdgeInsets.all(DfSpacing.md),
-              child: Text('Columns', style: Theme.of(sheetContext).textTheme.titleMedium),
-            ),
-            for (final column in board.columns)
-              ListTile(
-                leading: Icon(
-                  _columnTypes.where((t) => t.type == column.type).firstOrNull?.icon ?? Icons.view_column_outlined,
-                  color: DfColors.primary,
-                  size: 20,
-                ),
-                title: Text(column.title),
-                subtitle: Text(column.type),
-                trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-                  if (column.type == 'status' || column.type == 'dropdown' || column.type == 'tags')
-                    IconButton(
-                      icon: const Icon(Icons.tune_rounded, size: 18),
-                      tooltip: 'Edit choices',
-                      onPressed: () async {
-                        Navigator.pop(sheetContext);
-                        final settings = await editColumnSettings(context, column);
-                        if (settings == null || !context.mounted) return;
-                        await _guard(
-                          context,
-                          () => controller.updateColumnSettings(column.id, settings),
-                        );
-                      },
-                    ),
-                  IconButton(
-                    icon: const Icon(Icons.edit_outlined, size: 18),
-                    tooltip: 'Rename',
-                    onPressed: () async {
-                      Navigator.pop(sheetContext);
-                      final title = await promptForText(
-                        context,
-                        title: 'Rename column',
-                        initial: column.title,
-                      );
-                      if (title == null || title.isEmpty || !context.mounted) return;
-                      await _guard(context, () => controller.renameColumn(column.id, title));
-                    },
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.delete_outline_rounded, size: 18, color: DfColors.danger),
-                    tooltip: 'Delete column',
-                    onPressed: () async {
-                      Navigator.pop(sheetContext);
-                      final confirmed = await _confirm(
-                        context,
-                        title: 'Delete "${column.title}"?',
-                        message: 'Its values are removed from every item on this board.',
-                        destructive: true,
-                      );
-                      if (!confirmed || !context.mounted) return;
-                      await _guard(context, () => controller.deleteColumn(column.id));
-                    },
-                  ),
-                ]),
-              ),
-          ],
-        ),
-      ),
+  Future<void> _batchAssign(BuildContext context, BoardDetail board, BoardController controller) async {
+    final column = board.itemColumns.where((c) => c.type == 'people').firstOrNull;
+    if (column == null) return;
+    final members = await _assignable(board);
+    if (!context.mounted) return;
+    final picked = await showPeoplePicker(context, members: members, title: column.title);
+    if (picked == null || !context.mounted) return;
+    await _runBatch(
+      context,
+      controller,
+      action: 'set_cell',
+      columnId: column.id,
+      value: picked.isEmpty ? null : {'userIds': picked},
     );
+  }
+
+  Future<void> _batchMove(BuildContext context, BoardDetail board, BoardController controller) async {
+    final target = await _pickGroup(context, board);
+    if (target == null || !context.mounted) return;
+    await _runBatch(context, controller, action: 'move', groupId: target);
+  }
+
+  Future<void> _runBatch(
+    BuildContext context,
+    BoardController controller, {
+    required String action,
+    String? groupId,
+    String? columnId,
+    Map<String, dynamic>? value,
+  }) async {
+    final ids = _selected?.toList() ?? const [];
+    if (ids.isEmpty) return;
+    setState(() => _batchBusy = true);
+    await _guard(context, () async {
+      final affected = await controller.batch(
+        itemIds: ids,
+        action: action,
+        groupId: groupId,
+        columnId: columnId,
+        value: value,
+      );
+      if (context.mounted) showDfToast(context, '$affected item${affected == 1 ? '' : 's'} updated');
+    });
+    if (mounted) {
+      setState(() {
+        _batchBusy = false;
+        _selected = null;
+      });
+    }
   }
 }
 
@@ -455,15 +785,141 @@ Future<void> _guard(BuildContext context, Future<void> Function() action) async 
   }
 }
 
-class _BoardBody extends StatelessWidget {
-  const _BoardBody({required this.board, required this.controller, required this.filter});
+class _Pill extends StatelessWidget {
+  const _Pill({required this.label, this.icon, this.onTap});
 
-  final BoardDetail board;
-  final BoardController controller;
-  final BoardFilter filter;
+  final String label;
+  final IconData? icon;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(DfRadius.pill),
+      child: Container(
+        height: 26,
+        padding: const EdgeInsets.symmetric(horizontal: DfSpacing.xs),
+        decoration: BoxDecoration(
+          color: isDark ? DfColors.primary.withValues(alpha: 0.22) : DfColors.primarySubtle,
+          borderRadius: BorderRadius.circular(DfRadius.pill),
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          if (icon != null) ...[Icon(icon, size: 14, color: DfColors.primary), const SizedBox(width: 4)],
+          Text(label, style: Theme.of(context).textTheme.labelSmall?.copyWith(color: DfColors.primary)),
+        ]),
+      ),
+    );
+  }
+}
+
+class _UnsavedPill extends StatelessWidget {
+  const _UnsavedPill({required this.canSave, required this.onSave, required this.onDiscard});
+
+  final bool canSave;
+  final VoidCallback onSave;
+  final VoidCallback onDiscard;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = Theme.of(context).textTheme.labelSmall;
+    return Container(
+      height: 26,
+      padding: const EdgeInsets.only(left: DfSpacing.xs),
+      decoration: BoxDecoration(
+        color: DfColors.accentAmber.withValues(alpha: 0.15),
+        borderRadius: BorderRadius.circular(DfRadius.pill),
+      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Text('Unsaved changes', style: text),
+        const SizedBox(width: DfSpacing.xxs),
+        if (canSave)
+          TextButton(
+            style: TextButton.styleFrom(
+              visualDensity: VisualDensity.compact,
+              padding: const EdgeInsets.symmetric(horizontal: DfSpacing.xs),
+              minimumSize: Size.zero,
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+            onPressed: onSave,
+            child: Text('Save to view', style: text?.copyWith(color: DfColors.primary)),
+          ),
+        TextButton(
+          style: TextButton.styleFrom(
+            visualDensity: VisualDensity.compact,
+            padding: const EdgeInsets.symmetric(horizontal: DfSpacing.xs),
+            minimumSize: Size.zero,
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+          onPressed: onDiscard,
+          child: Text('Discard', style: text),
+        ),
+      ]),
+    );
+  }
+}
+
+// ---------------------------------------------------------------- table body
+
+/// The table itself: groups → rows → chips, with a saved view applied. Pure
+/// of Riverpod state beyond what rows read lazily when editing, so tests can
+/// pump it with a fixture board and a fake [BoardTableActions].
+class BoardTableBody extends StatefulWidget {
+  const BoardTableBody({
+    super.key,
+    required this.board,
+    required this.actions,
+    required this.config,
+    required this.quickFilter,
+    this.meUserId,
+    this.selectedIds,
+    this.onToggleSelected,
+    this.now,
+  });
+
+  final BoardDetail board;
+  final BoardTableActions actions;
+  final ViewConfig config;
+  final BoardFilter quickFilter;
+  final String? meUserId;
+
+  /// Non-null while in selection mode.
+  final Set<String>? selectedIds;
+  final ValueChanged<String>? onToggleSelected;
+
+  /// Injected clock for date filters in tests.
+  final DateTime? now;
+
+  @override
+  State<BoardTableBody> createState() => _BoardTableBodyState();
+}
+
+class _BoardTableBodyState extends State<BoardTableBody> {
+  final _expanded = <String>{};
+
+  void _toggleExpanded(String itemId) => setState(() {
+        if (!_expanded.remove(itemId)) _expanded.add(itemId);
+      });
+
+  @override
+  Widget build(BuildContext context) {
+    final board = widget.board;
+    final config = widget.config;
+    final quick = widget.quickFilter;
+    final ctx = ViewContext.forBoard(board, meUserId: widget.meUserId, now: widget.now);
+    final groups = applyView(
+      board,
+      config,
+      ctx,
+      extraFilter: quick.isActive ? (item) => quick.matches(item, board.columns) : null,
+    );
+    final columns = visibleColumns(board.itemColumns, config);
+    final autoNumbers = autoNumberIndex(board);
+    final filtersActive = config.hasFilters || quick.isActive;
+    final canReorder = !filtersActive && !config.hasSort && board.canEdit && widget.selectedIds == null;
+    final originals = {for (final g in board.groups) g.id: g};
+
     return ListView(
       padding: const EdgeInsets.only(bottom: 96),
       children: [
@@ -490,21 +946,38 @@ class _BoardBody extends StatelessWidget {
                 Text('+${board.members.length - 6}', style: Theme.of(context).textTheme.labelSmall),
             ]),
           ),
-        for (final group in board.groups)
-          _GroupSection(board: board, group: group, controller: controller, filter: filter),
-        Padding(
-          padding: const EdgeInsets.all(DfSpacing.md),
-          child: DfButton(
-            label: 'Add group',
-            variant: DfButtonVariant.tonal,
-            icon: const Icon(Icons.add_rounded, size: 20),
-            onPressed: () async {
-              final title = await promptForText(context, title: 'New group', hint: 'Group name');
-              if (title == null || title.isEmpty || !context.mounted) return;
-              await _guard(context, () => controller.addGroup(title));
-            },
+        for (final group in groups)
+          if (!(filtersActive && group.items.isEmpty))
+            _GroupSection(
+              board: board,
+              group: originals[group.id] ?? group,
+              visibleItems: group.items,
+              columns: columns,
+              config: config,
+              ctx: ctx,
+              autoNumbers: autoNumbers,
+              actions: widget.actions,
+              canReorder: canReorder,
+              meUserId: widget.meUserId,
+              expanded: _expanded,
+              onToggleExpanded: _toggleExpanded,
+              selectedIds: widget.selectedIds,
+              onToggleSelected: widget.onToggleSelected,
+            ),
+        if (board.canEdit && widget.selectedIds == null)
+          Padding(
+            padding: const EdgeInsets.all(DfSpacing.md),
+            child: DfButton(
+              label: 'Add group',
+              variant: DfButtonVariant.tonal,
+              icon: const Icon(Icons.add_rounded, size: 20),
+              onPressed: () async {
+                final title = await promptForText(context, title: 'New group', hint: 'Group name');
+                if (title == null || title.isEmpty || !context.mounted) return;
+                await _guard(context, () => widget.actions.addGroup(title));
+              },
+            ),
           ),
-        ),
       ],
     );
   }
@@ -514,14 +987,38 @@ class _GroupSection extends StatelessWidget {
   const _GroupSection({
     required this.board,
     required this.group,
-    required this.controller,
-    required this.filter,
+    required this.visibleItems,
+    required this.columns,
+    required this.config,
+    required this.ctx,
+    required this.autoNumbers,
+    required this.actions,
+    required this.canReorder,
+    required this.meUserId,
+    required this.expanded,
+    required this.onToggleExpanded,
+    required this.selectedIds,
+    required this.onToggleSelected,
   });
 
   final BoardDetail board;
+
+  /// The unfiltered group (for the header counter and reorder maths).
   final BoardGroup group;
-  final BoardController controller;
-  final BoardFilter filter;
+
+  /// Items after the view's filters/sort and the quick filters.
+  final List<BoardItem> visibleItems;
+  final List<BoardColumn> columns;
+  final ViewConfig config;
+  final ViewContext ctx;
+  final Map<String, int> autoNumbers;
+  final BoardTableActions actions;
+  final bool canReorder;
+  final String? meUserId;
+  final Set<String> expanded;
+  final ValueChanged<String> onToggleExpanded;
+  final Set<String>? selectedIds;
+  final ValueChanged<String>? onToggleSelected;
 
   @override
   Widget build(BuildContext context) {
@@ -529,12 +1026,7 @@ class _GroupSection extends StatelessWidget {
     final text = Theme.of(context).textTheme;
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final done = group.doneCount(board.columns);
-
-    // Quick Find / quick filters narrow what each group shows. A group whose
-    // items are all filtered away collapses to nothing while a filter is on.
-    final visibleItems =
-        filter.isActive ? group.items.where((i) => filter.matches(i, board.columns)).toList() : group.items;
-    if (filter.isActive && visibleItems.isEmpty) return const SizedBox.shrink();
+    final canEdit = board.canEdit;
 
     return Padding(
       padding: const EdgeInsets.only(bottom: DfSpacing.md),
@@ -551,15 +1043,17 @@ class _GroupSection extends StatelessWidget {
                 child: Icon(Icons.expand_more_rounded, color: color, size: 22),
               ),
               tooltip: group.collapsed ? 'Expand' : 'Collapse',
-              onPressed: () => controller.toggleCollapsed(group.id),
+              onPressed: () => actions.toggleCollapsed(group.id),
             ),
             Flexible(
               child: GestureDetector(
-                onTap: () async {
-                  final title = await promptForText(context, title: 'Rename group', initial: group.title);
-                  if (title == null || title.isEmpty || !context.mounted) return;
-                  await _guard(context, () => controller.renameGroup(group.id, title));
-                },
+                onTap: canEdit
+                    ? () async {
+                        final title = await promptForText(context, title: 'Rename group', initial: group.title);
+                        if (title == null || title.isEmpty || !context.mounted) return;
+                        await _guard(context, () => actions.renameGroup(group.id, title));
+                      }
+                    : null,
                 child: Text(
                   group.title,
                   maxLines: 1,
@@ -570,41 +1064,46 @@ class _GroupSection extends StatelessWidget {
             ),
             const SizedBox(width: DfSpacing.xs),
             Text(
-              group.items.isEmpty ? '0' : '$done/${group.items.length}',
+              group.items.isEmpty
+                  ? '0'
+                  : visibleItems.length == group.items.length
+                      ? '$done/${group.items.length}'
+                      : '${visibleItems.length} of ${group.items.length}',
               style: text.labelSmall,
             ),
             const Spacer(),
-            PopupMenuButton<String>(
-              icon: const Icon(Icons.more_horiz_rounded, size: 20),
-              onSelected: (action) async {
-                switch (action) {
-                  case 'rename':
-                    final title = await promptForText(context, title: 'Rename group', initial: group.title);
-                    if (title == null || title.isEmpty || !context.mounted) return;
-                    await _guard(context, () => controller.renameGroup(group.id, title));
-                  case 'color':
-                    final picked = await _pickColor(context, group.color);
-                    if (picked == null || !context.mounted) return;
-                    await _guard(context, () => controller.recolorGroup(group.id, picked));
-                  case 'delete':
-                    final confirmed = await _confirm(
-                      context,
-                      title: 'Delete "${group.title}"?',
-                      message: group.items.isEmpty
-                          ? 'The group will be removed.'
-                          : 'This deletes the group and its ${group.items.length} item(s).',
-                      destructive: true,
-                    );
-                    if (!confirmed || !context.mounted) return;
-                    await _guard(context, () => controller.deleteGroup(group.id));
-                }
-              },
-              itemBuilder: (context) => const [
-                PopupMenuItem(value: 'rename', child: Text('Rename')),
-                PopupMenuItem(value: 'color', child: Text('Change color')),
-                PopupMenuItem(value: 'delete', child: Text('Delete group')),
-              ],
-            ),
+            if (canEdit)
+              PopupMenuButton<String>(
+                icon: const Icon(Icons.more_horiz_rounded, size: 20),
+                onSelected: (action) async {
+                  switch (action) {
+                    case 'rename':
+                      final title = await promptForText(context, title: 'Rename group', initial: group.title);
+                      if (title == null || title.isEmpty || !context.mounted) return;
+                      await _guard(context, () => actions.renameGroup(group.id, title));
+                    case 'color':
+                      final picked = await _pickColor(context, group.color);
+                      if (picked == null || !context.mounted) return;
+                      await _guard(context, () => actions.recolorGroup(group.id, picked));
+                    case 'delete':
+                      final confirmed = await _confirm(
+                        context,
+                        title: 'Delete "${group.title}"?',
+                        message: group.items.isEmpty
+                            ? 'The group will be removed.'
+                            : 'This deletes the group and its ${group.items.length} item(s).',
+                        destructive: true,
+                      );
+                      if (!confirmed || !context.mounted) return;
+                      await _guard(context, () => actions.deleteGroup(group.id));
+                  }
+                },
+                itemBuilder: (context) => const [
+                  PopupMenuItem(value: 'rename', child: Text('Rename')),
+                  PopupMenuItem(value: 'color', child: Text('Change color')),
+                  PopupMenuItem(value: 'delete', child: Text('Delete group')),
+                ],
+              ),
           ]),
         ),
         // AnimatedSize makes collapse/expand sweep instead of snap, with the
@@ -616,39 +1115,56 @@ class _GroupSection extends StatelessWidget {
           child: group.collapsed
               ? const SizedBox(width: double.infinity)
               : Container(
-            margin: const EdgeInsets.symmetric(horizontal: DfSpacing.md),
-            decoration: BoxDecoration(
-              color: isDark ? DfColors.surfaceDark : Colors.white,
-              borderRadius: BorderRadius.circular(DfRadius.md),
-              border: Border.all(color: isDark ? DfColors.borderDark : DfColors.border),
-            ),
-            child: Column(children: [
-              // Nested inside the page's ListView, so it must not scroll itself;
-              // default drag handles are off in favour of an explicit grip.
-              // Reordering is disabled while a filter narrows the list — the
-              // visible indices would not match the server's order.
-              ReorderableListView.builder(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                buildDefaultDragHandles: false,
-                itemCount: visibleItems.length,
-                onReorderItem: filter.isActive
-                    ? (oldIndex, newIndex) {}
-                    : (oldIndex, newIndex) => _reorder(context, group, oldIndex, newIndex),
-                itemBuilder: (context, i) => _ItemRow(
-                  key: ValueKey(visibleItems[i].id),
-                  board: board,
-                  group: group,
-                  item: visibleItems[i],
-                  accent: color,
-                  controller: controller,
-                  dragIndex: i,
+                  margin: const EdgeInsets.symmetric(horizontal: DfSpacing.md),
+                  clipBehavior: Clip.antiAlias,
+                  decoration: BoxDecoration(
+                    color: isDark ? DfColors.surfaceDark : Colors.white,
+                    borderRadius: BorderRadius.circular(DfRadius.md),
+                    border: Border.all(color: isDark ? DfColors.borderDark : DfColors.border),
+                  ),
+                  child: Column(children: [
+                    // Nested inside the page's ListView, so it must not scroll itself;
+                    // default drag handles are off in favour of an explicit grip.
+                    // Reordering is disabled while a filter or sort changes the
+                    // visible order — the indices would not match the server's.
+                    ReorderableListView.builder(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      buildDefaultDragHandles: false,
+                      itemCount: visibleItems.length,
+                      onReorderItem: canReorder
+                          ? (oldIndex, newIndex) => _reorder(context, oldIndex, newIndex)
+                          : (oldIndex, newIndex) {},
+                      itemBuilder: (context, i) {
+                        final item = visibleItems[i];
+                        return _ItemRow(
+                          key: ValueKey(item.id),
+                          board: board,
+                          group: group,
+                          item: item,
+                          columns: columns,
+                          config: config,
+                          ctx: ctx,
+                          autoNumber: autoNumbers[item.id],
+                          accent: color,
+                          actions: actions,
+                          dragIndex: i,
+                          canDrag: canReorder,
+                          meUserId: meUserId,
+                          expanded: expanded.contains(item.id),
+                          onToggleExpanded: () => onToggleExpanded(item.id),
+                          selected: selectedIds?.contains(item.id),
+                          onToggleSelected: onToggleSelected == null ? null : () => onToggleSelected!(item.id),
+                        );
+                      },
+                    ),
+                    if (visibleItems.isNotEmpty) SummaryFooter(columns: columns, items: visibleItems),
+                    if (canEdit && selectedIds == null) ...[
+                      if (group.items.isNotEmpty) const Divider(height: 1),
+                      _AddItemRow(groupId: group.id, actions: actions),
+                    ],
+                  ]),
                 ),
-              ),
-              if (group.items.isNotEmpty) const Divider(height: 1),
-              _AddItemRow(groupId: group.id, controller: controller),
-            ]),
-          ),
         ),
       ]),
     );
@@ -658,15 +1174,16 @@ class _GroupSection extends StatelessWidget {
   ///
   /// `onReorderItem` already gives `newIndex` as the destination in the list
   /// with the dragged row removed, so no off-by-one adjustment is needed.
-  Future<void> _reorder(BuildContext context, BoardGroup group, int oldIndex, int newIndex) async {
+  /// Only reachable when the visible list equals the group's list.
+  Future<void> _reorder(BuildContext context, int oldIndex, int newIndex) async {
     if (oldIndex == newIndex) return;
-    final remaining = [...group.items]..removeAt(oldIndex);
-    final moved = group.items[oldIndex];
+    final remaining = [...visibleItems]..removeAt(oldIndex);
+    final moved = visibleItems[oldIndex];
     final afterItemId = newIndex == 0 ? null : remaining[newIndex - 1].id;
 
     await _guard(
       context,
-      () => controller.moveItem(itemId: moved.id, groupId: group.id, afterItemId: afterItemId),
+      () => actions.moveItem(itemId: moved.id, groupId: group.id, afterItemId: afterItemId),
     );
   }
 
@@ -694,9 +1211,7 @@ class _GroupSection extends StatelessWidget {
                         borderRadius: BorderRadius.circular(DfRadius.sm),
                         border: token == current ? Border.all(color: DfColors.textPrimary, width: 2.5) : null,
                       ),
-                      child: token == current
-                          ? const Icon(Icons.check_rounded, color: Colors.white, size: 20)
-                          : null,
+                      child: token == current ? const Icon(Icons.check_rounded, color: Colors.white, size: 20) : null,
                     ),
                   ),
               ],
@@ -714,65 +1229,132 @@ class _ItemRow extends ConsumerWidget {
     required this.board,
     required this.group,
     required this.item,
+    required this.columns,
+    required this.config,
+    required this.ctx,
+    required this.autoNumber,
     required this.accent,
-    required this.controller,
+    required this.actions,
     required this.dragIndex,
+    required this.canDrag,
+    required this.meUserId,
+    required this.expanded,
+    required this.onToggleExpanded,
+    required this.selected,
+    required this.onToggleSelected,
   });
 
   final BoardDetail board;
   final BoardGroup group;
   final BoardItem item;
+  final List<BoardColumn> columns;
+  final ViewConfig config;
+  final ViewContext ctx;
+  final int? autoNumber;
   final Color accent;
-  final BoardController controller;
+  final BoardTableActions actions;
 
   /// Position in the reorderable list, needed by the drag handle.
   final int dragIndex;
+  final bool canDrag;
+  final String? meUserId;
+  final bool expanded;
+  final VoidCallback onToggleExpanded;
+
+  /// Null when not in selection mode.
+  final bool? selected;
+  final VoidCallback? onToggleSelected;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final text = Theme.of(context).textTheme;
-    final isPending = item.id == '__pending__';
+    final isPending = item.id == pendingItemId;
+    final selecting = selected != null;
+    final canEdit = board.canEdit && !isPending;
+    final rowColor = rowColorFor(item, config, board.columns, ctx);
+    final subitemCount = item.subitems.length;
 
     return Opacity(
       opacity: isPending ? 0.5 : 1,
       child: Column(children: [
         if (dragIndex > 0) const Divider(height: 1),
-        InkWell(
-          onTap: isPending ? null : () => context.push('/items/${item.id}'),
-          onLongPress: isPending ? null : () => _showItemMenu(context),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: DfSpacing.sm, vertical: DfSpacing.sm),
-            child: Row(children: [
-              _accentBar(),
-              Expanded(
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text(item.name, maxLines: 2, overflow: TextOverflow.ellipsis, style: text.bodyMedium),
-                  const SizedBox(height: DfSpacing.xxs),
-                  // Every column gets a tappable cell; unset ones show a subtle "+".
-                  Wrap(spacing: DfSpacing.xxs, runSpacing: DfSpacing.xxs, children: [
-                    for (final column in board.columns)
-                      _Cell(
-                        column: column,
-                        item: item,
-                        members: board.members,
-                        enabled: !isPending,
-                        onEdit: () => _editCell(context, ref, column),
-                      ),
-                  ]),
-                ]),
-              ),
-              if (item.updatesCount > 0)
-                Padding(
-                  padding: const EdgeInsets.only(left: DfSpacing.xs),
-                  child: Row(children: [
-                    const Icon(Icons.chat_bubble_outline_rounded, size: 14, color: DfColors.textTertiary),
-                    const SizedBox(width: 2),
-                    Text('${item.updatesCount}', style: text.labelSmall),
+        Container(
+          key: rowColor == null ? null : ValueKey('row-tint:${item.id}'),
+          color: rowColor == null
+              ? (selected == true ? DfColors.primary.withValues(alpha: 0.08) : null)
+              : DfColors.token(rowColor).withValues(alpha: 0.12),
+          child: InkWell(
+            onTap: isPending
+                ? null
+                : selecting
+                    ? onToggleSelected
+                    : () => context.push('/items/${item.id}'),
+            onLongPress: isPending || selecting || !board.canEdit ? null : () => _showItemMenu(context, ref),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: DfSpacing.sm, vertical: DfSpacing.sm),
+              child: Row(children: [
+                if (selecting)
+                  Padding(
+                    padding: const EdgeInsets.only(right: DfSpacing.xxs),
+                    child: Checkbox(
+                      value: selected,
+                      visualDensity: VisualDensity.compact,
+                      onChanged: isPending ? null : (_) => onToggleSelected?.call(),
+                    ),
+                  )
+                else
+                  _accentBar(),
+                Expanded(
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text(item.name, maxLines: 2, overflow: TextOverflow.ellipsis, style: text.bodyMedium),
+                    const SizedBox(height: DfSpacing.xxs),
+                    // Every visible column gets a tappable cell; unset ones show a subtle "+".
+                    Wrap(spacing: DfSpacing.xxs, runSpacing: DfSpacing.xxs, children: [
+                      if (subitemCount > 0)
+                        SubitemToggleChip(
+                          count: subitemCount,
+                          done: item.subitemsDone(board.columns),
+                          expanded: expanded,
+                          onTap: onToggleExpanded,
+                        ),
+                      for (final column in columns)
+                        DfCellChip(
+                          column: column,
+                          item: item,
+                          members: board.members,
+                          enabled: canEdit && !selecting,
+                          autoNumber: autoNumber,
+                          tint: cellColorFor(item, column, config, board.columns, ctx),
+                          onEdit: () => _editCell(context, ref, column, item),
+                        ),
+                    ]),
                   ]),
                 ),
-            ]),
+                if (item.updatesCount > 0)
+                  Padding(
+                    padding: const EdgeInsets.only(left: DfSpacing.xs),
+                    child: Row(children: [
+                      const Icon(Icons.chat_bubble_outline_rounded, size: 14, color: DfColors.textTertiary),
+                      const SizedBox(width: 2),
+                      Text('${item.updatesCount}', style: text.labelSmall),
+                    ]),
+                  ),
+              ]),
+            ),
           ),
         ),
+        if (expanded && !isPending)
+          SubitemRows(
+            parent: item,
+            columns: board.subitemColumns,
+            members: board.members,
+            accent: accent,
+            canEdit: board.canEdit && !selecting,
+            onEditCell: (sub, column) => _editCell(context, ref, column, sub),
+            onOpen: (sub) => context.push('/items/${sub.id}'),
+            onMenu: (sub) => _showSubitemMenu(context, sub),
+            onAdd: board.canEdit && !selecting ? () => _addSubitem(context) : null,
+          ),
       ]),
     );
   }
@@ -786,32 +1368,141 @@ class _ItemRow extends ConsumerWidget {
       margin: const EdgeInsets.only(right: DfSpacing.xs),
       decoration: BoxDecoration(color: accent, borderRadius: BorderRadius.circular(2)),
     );
-    if (item.id == '__pending__') return bar;
+    if (!canDrag || item.id == pendingItemId) return bar;
     return ReorderableDragStartListener(index: dragIndex, child: bar);
   }
 
-  Future<void> _editCell(BuildContext context, WidgetRef ref, BoardColumn column) async {
+  Future<void> _editCell(BuildContext context, WidgetRef ref, BoardColumn column, BoardItem target) async {
     // Assignment is account-scoped, so the picker offers account members rather
     // than only those explicitly added to this board.
-    final assignable = await ref.read(assignableMembersProvider.future).catchError(
-          (Object _) => board.members,
-        );
+    final assignable = await ref.read(assignableMembersProvider.future).catchError((Object _) => board.members);
     if (!context.mounted) return;
 
     final result = await editCell(
       context: context,
       column: column,
-      item: item,
+      item: target,
       members: assignable,
+      meUserId: meUserId,
+      files: ref.read(itemRepositoryProvider),
     );
-    if (!result.changed || !context.mounted) return;
-    await _guard(
-      context,
-      () => controller.setCell(itemId: item.id, columnId: column.id, value: result.value),
+    if (!context.mounted) return;
+    if (result.changed) {
+      await _guard(
+        context,
+        () => actions.setCell(itemId: target.id, columnId: column.id, value: result.value),
+      );
+    }
+    if (result.refresh && context.mounted) await _guard(context, actions.refresh);
+  }
+
+  Future<void> _addSubitem(BuildContext context) async {
+    final name = await promptForText(context, title: 'New subitem', hint: 'Subitem name');
+    if (name == null || name.isEmpty || !context.mounted) return;
+    await _guard(context, () async {
+      await actions.addSubitem(parentItemId: item.id, name: name);
+    });
+    if (!expanded) onToggleExpanded();
+  }
+
+  void _showItemMenu(BuildContext context, WidgetRef ref) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (sheetContext) => ListView(shrinkWrap: true, children: [
+        Padding(
+          padding: const EdgeInsets.all(DfSpacing.md),
+          child: Text(
+            item.name,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(sheetContext).textTheme.titleMedium,
+          ),
+        ),
+        ListTile(
+          leading: const Icon(Icons.open_in_new_rounded),
+          title: const Text('Open item'),
+          onTap: () {
+            Navigator.pop(sheetContext);
+            context.push('/items/${item.id}');
+          },
+        ),
+        ListTile(
+          leading: const Icon(Icons.edit_outlined),
+          title: const Text('Rename'),
+          onTap: () async {
+            Navigator.pop(sheetContext);
+            final name = await promptForText(context, title: 'Rename item', initial: item.name);
+            if (name == null || name.isEmpty || !context.mounted) return;
+            await _guard(context, () => actions.renameItem(item.id, name));
+          },
+        ),
+        ListTile(
+          leading: const Icon(Icons.copy_rounded),
+          title: const Text('Duplicate'),
+          onTap: () async {
+            Navigator.pop(sheetContext);
+            await _guard(context, () => actions.duplicateItem(item.id));
+          },
+        ),
+        ListTile(
+          leading: const Icon(Icons.subdirectory_arrow_right_rounded),
+          title: const Text('Add subitem'),
+          onTap: () async {
+            Navigator.pop(sheetContext);
+            await _addSubitem(context);
+          },
+        ),
+        ListTile(
+          leading: const Icon(Icons.drive_file_move_outlined),
+          title: const Text('Move to group'),
+          onTap: () async {
+            Navigator.pop(sheetContext);
+            final target = await _pickGroup(context, board, exclude: group.id);
+            if (target == null || !context.mounted) return;
+            await _guard(context, () => actions.moveItem(itemId: item.id, groupId: target));
+          },
+        ),
+        ListTile(
+          leading: const Icon(Icons.swap_horiz_rounded),
+          title: const Text('Move to board'),
+          onTap: () async {
+            Navigator.pop(sheetContext);
+            final moved = await showMoveItemToBoardFlow(context, ref, item: item, board: board);
+            if (moved && context.mounted) await _guard(context, actions.refresh);
+          },
+        ),
+        ListTile(
+          leading: const Icon(Icons.archive_outlined),
+          title: const Text('Archive'),
+          subtitle: const Text('Hidden from the board, restorable any time'),
+          onTap: () async {
+            Navigator.pop(sheetContext);
+            await _guard(context, () => actions.archiveItem(item.id));
+          },
+        ),
+        ListTile(
+          leading: const Icon(Icons.delete_outline_rounded, color: DfColors.danger),
+          title: const Text('Delete', style: TextStyle(color: DfColors.danger)),
+          onTap: () async {
+            Navigator.pop(sheetContext);
+            final confirmed = await _confirm(
+              context,
+              title: 'Delete "${item.name}"?',
+              message: 'It moves to the trash and is deleted for good after 30 days.'
+                  '${item.subitems.isEmpty ? '' : ' Its ${item.subitems.length} subitem(s) go with it.'}',
+              destructive: true,
+            );
+            if (!confirmed || !context.mounted) return;
+            await _guard(context, () => actions.trashItem(item.id));
+          },
+        ),
+      ]),
     );
   }
 
-  void _showItemMenu(BuildContext context) {
+  void _showSubitemMenu(BuildContext context, BoardItem sub) {
     showModalBottomSheet<void>(
       context: context,
       builder: (sheetContext) => SafeArea(
@@ -819,28 +1510,20 @@ class _ItemRow extends ConsumerWidget {
           Padding(
             padding: const EdgeInsets.all(DfSpacing.md),
             child: Text(
-              item.name,
+              sub.name,
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
               style: Theme.of(sheetContext).textTheme.titleMedium,
             ),
           ),
           ListTile(
-            leading: const Icon(Icons.open_in_new_rounded),
-            title: const Text('Open item'),
-            onTap: () {
-              Navigator.pop(sheetContext);
-              context.push('/items/${item.id}');
-            },
-          ),
-          ListTile(
             leading: const Icon(Icons.edit_outlined),
             title: const Text('Rename'),
             onTap: () async {
               Navigator.pop(sheetContext);
-              final name = await promptForText(context, title: 'Rename item', initial: item.name);
+              final name = await promptForText(context, title: 'Rename subitem', initial: sub.name);
               if (name == null || name.isEmpty || !context.mounted) return;
-              await _guard(context, () => controller.renameItem(item.id, name));
+              await _guard(context, () => actions.renameItem(sub.id, name));
             },
           ),
           ListTile(
@@ -848,20 +1531,15 @@ class _ItemRow extends ConsumerWidget {
             title: const Text('Duplicate'),
             onTap: () async {
               Navigator.pop(sheetContext);
-              await _guard(context, () => controller.duplicateItem(item.id));
+              await _guard(context, () => actions.duplicateItem(sub.id));
             },
           ),
           ListTile(
-            leading: const Icon(Icons.drive_file_move_outlined),
-            title: const Text('Move to group'),
+            leading: const Icon(Icons.archive_outlined),
+            title: const Text('Archive'),
             onTap: () async {
               Navigator.pop(sheetContext);
-              final target = await _pickGroup(context, board, exclude: group.id);
-              if (target == null || !context.mounted) return;
-              await _guard(
-                context,
-                () => controller.moveItem(itemId: item.id, groupId: target),
-              );
+              await _guard(context, () => actions.archiveItem(sub.id));
             },
           ),
           ListTile(
@@ -871,12 +1549,12 @@ class _ItemRow extends ConsumerWidget {
               Navigator.pop(sheetContext);
               final confirmed = await _confirm(
                 context,
-                title: 'Delete "${item.name}"?',
-                message: 'The item will be removed from this board.',
+                title: 'Delete "${sub.name}"?',
+                message: 'It moves to the trash and is deleted for good after 30 days.',
                 destructive: true,
               );
               if (!confirmed || !context.mounted) return;
-              await _guard(context, () => controller.archiveItem(item.id));
+              await _guard(context, () => actions.trashItem(sub.id));
             },
           ),
         ]),
@@ -920,86 +1598,12 @@ Future<String?> _pickGroup(BuildContext context, BoardDetail board, {String? exc
   );
 }
 
-/// One cell: shows the value chip, or a placeholder that opens the editor.
-///
-/// Status chips replay a small celebration when their label changes — a pop
-/// with the Vibe emphasize curve, plus a shimmer sweep when the new label
-/// counts as done (echoing Vibe's LabelCelebrationAnimation).
-class _Cell extends StatelessWidget {
-  const _Cell({
-    required this.column,
-    required this.item,
-    required this.members,
-    required this.enabled,
-    required this.onEdit,
-  });
-
-  final BoardColumn column;
-  final BoardItem item;
-  final List<BoardMember> members;
-  final bool enabled;
-  final VoidCallback onEdit;
-
-  @override
-  Widget build(BuildContext context) {
-    var chip = cellChip(context, column, item, members);
-
-    if (chip != null && column.type == 'status') {
-      final cell = item.values[column.id];
-      final labelId = cell is Map<String, dynamic> ? cell['labelId'] as String? : null;
-      final isDone = column.statusLabels.any((l) => l.id == labelId && l.isDone);
-      chip = Animate(
-        // Re-keying restarts the effects each time the label changes.
-        key: ValueKey('${column.id}:$labelId'),
-        effects: [
-          ScaleEffect(
-            begin: const Offset(0.85, 0.85),
-            end: const Offset(1, 1),
-            duration: DfMotion.expressiveShort,
-            curve: DfMotion.emphasize,
-          ),
-          if (isDone)
-            ShimmerEffect(
-              delay: DfMotion.productiveMedium,
-              duration: DfMotion.expressiveLong,
-              color: Colors.white.withValues(alpha: 0.6),
-            ),
-        ],
-        child: chip,
-      );
-    }
-
-    return InkWell(
-      onTap: enabled ? onEdit : null,
-      borderRadius: BorderRadius.circular(6),
-      child: chip ??
-          Container(
-            height: 24,
-            padding: const EdgeInsets.symmetric(horizontal: DfSpacing.xs),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(6),
-              border: Border.all(
-                color: Theme.of(context).brightness == Brightness.dark
-                    ? DfColors.borderDark
-                    : DfColors.border,
-              ),
-            ),
-            child: Row(mainAxisSize: MainAxisSize.min, children: [
-              const Icon(Icons.add_rounded, size: 12, color: DfColors.textTertiary),
-              const SizedBox(width: 2),
-              Text(column.title, style: Theme.of(context).textTheme.labelSmall),
-            ]),
-          ),
-    );
-  }
-}
-
 /// Inline "+ Add item" row at the bottom of each group.
 class _AddItemRow extends StatefulWidget {
-  const _AddItemRow({required this.groupId, required this.controller});
+  const _AddItemRow({required this.groupId, required this.actions});
 
   final String groupId;
-  final BoardController controller;
+  final BoardTableActions actions;
 
   @override
   State<_AddItemRow> createState() => _AddItemRowState();
@@ -1024,7 +1628,7 @@ class _AddItemRowState extends State<_AddItemRow> {
       return;
     }
     _controller.clear();
-    await _guard(context, () => widget.controller.addItem(groupId: widget.groupId, name: name));
+    await _guard(context, () => widget.actions.addItem(groupId: widget.groupId, name: name));
     if (!mounted) return;
     if (keepOpen) {
       _focus.requestFocus();
@@ -1120,6 +1724,7 @@ Future<bool> _confirm(
   required String title,
   required String message,
   bool destructive = false,
+  String? confirmLabel,
 }) async {
   final result = await showDialog<bool>(
     context: context,
@@ -1131,7 +1736,7 @@ Future<bool> _confirm(
         TextButton(
           onPressed: () => Navigator.pop(dialogContext, true),
           child: Text(
-            destructive ? 'Delete' : 'Confirm',
+            confirmLabel ?? (destructive ? 'Delete' : 'Confirm'),
             style: TextStyle(color: destructive ? DfColors.danger : DfColors.primary),
           ),
         ),

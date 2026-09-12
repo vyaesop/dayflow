@@ -4,18 +4,25 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 
+import '../../core/api/api_exception.dart';
+import '../../core/auth/auth_controller.dart';
 import '../../core/models/models.dart';
 import '../../core/theme/motion.dart';
 import '../../core/theme/tokens.dart';
 import '../../ui/widgets/df_button.dart';
 import '../../ui/widgets/df_misc.dart';
 import 'board_controller.dart';
+import 'view_engine.dart';
 
-/// Month calendar over a board's first date column.
+/// Month calendar over a board's date (or timeline) column.
+///
+/// With a [viewId] the saved view's filters apply and its `dateColumnId`
+/// picks the column; changing the column is written back to the view.
 class CalendarScreen extends ConsumerStatefulWidget {
-  const CalendarScreen({super.key, required this.boardId});
+  const CalendarScreen({super.key, required this.boardId, this.viewId});
 
   final String boardId;
+  final String? viewId;
 
   @override
   ConsumerState<CalendarScreen> createState() => _CalendarScreenState();
@@ -24,11 +31,19 @@ class CalendarScreen extends ConsumerStatefulWidget {
 class _CalendarScreenState extends ConsumerState<CalendarScreen> {
   late DateTime _month = DateTime(DateTime.now().year, DateTime.now().month);
   DateTime? _selectedDay;
+  String? _dateColumnId;
 
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(boardControllerProvider(widget.boardId));
+    final controller = ref.read(boardControllerProvider(widget.boardId).notifier);
+    final auth = ref.watch(authControllerProvider);
+    final meUserId = auth is SignedIn ? auth.me.id : null;
     final text = Theme.of(context).textTheme;
+
+    final board = state.value;
+    final view = board?.views.where((v) => v.id == widget.viewId).firstOrNull;
+    final config = view == null ? const ViewConfig.empty() : ViewConfig.fromJson(view.config);
 
     return Scaffold(
       appBar: AppBar(
@@ -41,7 +56,7 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen> {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Text(board.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-              Text('Calendar', style: text.labelSmall),
+              Text(view?.name ?? 'Calendar', style: text.labelSmall),
             ],
           ),
           orElse: () => const Text('Calendar'),
@@ -69,15 +84,24 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen> {
           ]),
         ),
         data: (board) {
-          final dateColumn = board.columns.where((c) => c.type == 'date').firstOrNull;
-          if (dateColumn == null) return _NoDateColumn(boardId: widget.boardId);
+          final dateColumns = board.itemColumns.where((c) => c.type == 'date' || c.type == 'timeline').toList();
+          if (dateColumns.isEmpty) return _NoDateColumn(boardId: widget.boardId);
+          final wantedId = _dateColumnId ?? config.dateColumnId;
+          final dateColumn = dateColumns.firstWhere(
+            (c) => c.id == wantedId,
+            orElse: () => dateColumns.firstWhere((c) => c.type == 'date', orElse: () => dateColumns.first),
+          );
 
           // date (yyyy-MM-dd) → items due that day, with their group color.
+          // Subitems ride inside their parents and are not placed.
+          final groups = applyView(board, config, ViewContext.forBoard(board, meUserId: meUserId));
           final byDay = <String, List<(BoardItem, String)>>{};
-          for (final group in board.groups) {
+          for (final group in groups) {
             for (final item in group.items) {
               final cell = item.values[dateColumn.id];
-              final raw = cell is Map<String, dynamic> ? cell['date'] as String? : null;
+              final raw = cell is Map<String, dynamic>
+                  ? (dateColumn.type == 'timeline' ? cell['from'] : cell['date']) as String?
+                  : null;
               if (raw == null) continue;
               byDay.putIfAbsent(raw, () => []).add((item, group.color));
             }
@@ -88,6 +112,29 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen> {
           final dayItems = selectedKey == null ? const <(BoardItem, String)>[] : byDay[selectedKey] ?? const [];
 
           return Column(children: [
+            if (dateColumns.length > 1)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(DfSpacing.md, DfSpacing.xs, DfSpacing.md, 0),
+                child: Row(children: [
+                  Text('Dates from', style: text.labelMedium),
+                  const SizedBox(width: DfSpacing.xs),
+                  DropdownButton<String>(
+                    value: dateColumn.id,
+                    underline: const SizedBox.shrink(),
+                    items: [
+                      for (final column in dateColumns)
+                        DropdownMenuItem(value: column.id, child: Text(column.title)),
+                    ],
+                    onChanged: (value) {
+                      if (value == null) return;
+                      setState(() => _dateColumnId = value);
+                      if (view != null && board.canEdit) {
+                        _persist(controller, view, config.copyWith(dateColumnId: () => value));
+                      }
+                    },
+                  ),
+                ]),
+              ),
             _MonthHeader(
               month: _month,
               onPrevious: () => setState(() => _month = DateTime(_month.year, _month.month - 1)),
@@ -159,6 +206,14 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen> {
         },
       ),
     );
+  }
+
+  Future<void> _persist(BoardController controller, BoardView view, ViewConfig config) async {
+    try {
+      await controller.updateViewConfig(view.id, config.toJson());
+    } on ApiException catch (e) {
+      if (mounted) showDfToast(context, e.message, icon: Icons.error_outline_rounded);
+    }
   }
 }
 
