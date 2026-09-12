@@ -18,7 +18,19 @@ export const columnType = pgEnum('column_type', [
   'vote',
   'location',
   'link',
+  'long_text',
+  'email',
+  'phone',
+  'files',
+  'rating',
+  // Read-only columns rendered from item metadata.
+  'item_id',
+  'creation_log',
+  'last_updated',
+  'auto_number',
 ]);
+/** Which item level a column belongs to: the board's items or their subitems. */
+export const columnScope = pgEnum('column_scope', ['items', 'subitems']);
 export const otpPurpose = pgEnum('otp_purpose', ['signup', 'login']);
 export const notificationType = pgEnum('notification_type', [
   'mention',
@@ -46,5 +58,13 @@ export const activityEvent = pgEnum('activity_event', [
   'board_renamed',
   'member_added',
   'member_removed',
+  'item_trashed',
+  'item_restored',
+  'item_moved_to_board',
+  'board_archived',
+  'board_trashed',
+  'board_restored',
+  'column_moved',
+  'activity_undone',
 ]);
 export const useFor = pgEnum('use_for', ['work', 'personal', 'school']);

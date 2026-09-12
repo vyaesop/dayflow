@@ -39,6 +39,7 @@ export class AuthService {
   private readonly logger = new Logger(AuthService.name);
   private readonly devEcho: boolean;
   private readonly googleClient: OAuth2Client | null;
+  private readonly googleClientId: string | null;
 
   constructor(
     @Inject(DRIZZLE) private readonly db: Database,
@@ -52,6 +53,7 @@ export class AuthService {
   ) {
     this.devEcho = config.get('NODE_ENV', { infer: true }) !== 'production' && !!config.get('OTP_DEV_ECHO', { infer: true });
     const googleClientId = config.get('GOOGLE_CLIENT_ID', { infer: true });
+    this.googleClientId = googleClientId ?? null;
     this.googleClient = googleClientId ? new OAuth2Client(googleClientId) : null;
   }
 
@@ -179,11 +181,18 @@ export class AuthService {
   }
 
   async googleLogin(idToken: string, userAgent?: string): Promise<AuthSession> {
-    if (!this.googleClient) {
+    if (!this.googleClient || !this.googleClientId) {
       throw new BadRequestException('Google sign-in is not configured on this server.');
     }
-    const ticket = await this.googleClient.verifyIdToken({ idToken });
-    const info = ticket.getPayload();
+    // `audience` is mandatory: without it any Google OAuth client's tokens
+    // would be accepted, letting a third-party app log in as its users here.
+    let info;
+    try {
+      const ticket = await this.googleClient.verifyIdToken({ idToken, audience: this.googleClientId });
+      info = ticket.getPayload();
+    } catch {
+      throw new UnauthorizedException('Google token could not be verified.');
+    }
     if (!info?.email || !info.sub) {
       throw new UnauthorizedException('Google token could not be verified.');
     }
@@ -232,6 +241,7 @@ export class AuthService {
   async refresh(rawToken: string, userAgent?: string): Promise<AuthSession> {
     const { ctx, refreshToken } = await this.tokens.rotate(rawToken, userAgent);
     if (!ctx.accountId) throw new UnauthorizedException('Session expired. Please log in again.');
+    await this.sessions.assertActiveMembership(ctx.userId, ctx.accountId);
     const me = await this.sessions.buildMe(ctx.userId, ctx.accountId);
     const access = await this.tokens.signAccess({
       userId: ctx.userId,

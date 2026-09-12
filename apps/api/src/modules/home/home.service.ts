@@ -1,14 +1,19 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, desc, eq, isNull } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import { Database, DRIZZLE } from '../../db/db.module';
+import { boardIsLive } from '../../db/live';
 import { boardFavorites, boards, recentVisits, userProfiles, workspaces } from '../../db/schema';
 import type { AuthContext } from '../../common/auth-context';
+import { BoardAccessService } from '../access/board-access.service';
 
 export const SETUP_STEPS = ['create_first_board', 'get_started_basics', 'unlock_full_experience'] as const;
 
 @Injectable()
 export class HomeService {
-  constructor(@Inject(DRIZZLE) private readonly db: Database) {}
+  constructor(
+    @Inject(DRIZZLE) private readonly db: Database,
+    private readonly boardAccess: BoardAccessService,
+  ) {}
 
   async overview(auth: AuthContext) {
     const [profile] = await this.db
@@ -21,6 +26,7 @@ export class HomeService {
       .select({
         id: boards.id,
         name: boards.name,
+        type: boards.type,
         workspaceName: workspaces.name,
         updatedAt: boards.updatedAt,
       })
@@ -28,7 +34,12 @@ export class HomeService {
       .innerJoin(boards, eq(boardFavorites.boardId, boards.id))
       .innerJoin(workspaces, eq(boards.workspaceId, workspaces.id))
       .where(
-        and(eq(boardFavorites.userId, auth.userId), eq(boards.accountId, auth.accountId), isNull(boards.archivedAt)),
+        and(
+          eq(boardFavorites.userId, auth.userId),
+          eq(boards.accountId, auth.accountId),
+          boardIsLive(),
+          this.boardAccess.visibleTo(auth),
+        ),
       )
       .orderBy(desc(boardFavorites.createdAt))
       .limit(10);
@@ -37,6 +48,7 @@ export class HomeService {
       .select({
         id: boards.id,
         name: boards.name,
+        type: boards.type,
         workspaceName: workspaces.name,
         updatedAt: boards.updatedAt,
         visitedAt: recentVisits.visitedAt,
@@ -45,7 +57,12 @@ export class HomeService {
       .innerJoin(boards, eq(recentVisits.boardId, boards.id))
       .innerJoin(workspaces, eq(boards.workspaceId, workspaces.id))
       .where(
-        and(eq(recentVisits.userId, auth.userId), eq(boards.accountId, auth.accountId), isNull(boards.archivedAt)),
+        and(
+          eq(recentVisits.userId, auth.userId),
+          eq(boards.accountId, auth.accountId),
+          boardIsLive(),
+          this.boardAccess.visibleTo(auth),
+        ),
       )
       .orderBy(desc(recentVisits.visitedAt))
       .limit(10);
@@ -63,6 +80,7 @@ export class HomeService {
       favorites: favorites.map((f) => ({
         id: f.id,
         name: f.name,
+        type: f.type,
         workspaceName: f.workspaceName,
         updatedAt: f.updatedAt.toISOString(),
         isFavorite: true,
@@ -70,6 +88,7 @@ export class HomeService {
       recentlyVisited: recents.map((r) => ({
         id: r.id,
         name: r.name,
+        type: r.type,
         workspaceName: r.workspaceName,
         updatedAt: r.updatedAt.toISOString(),
         visitedAt: r.visitedAt.toISOString(),

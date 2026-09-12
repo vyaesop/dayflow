@@ -8,19 +8,19 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { and, asc, count, eq, gt, isNull } from 'drizzle-orm';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { Database, DRIZZLE } from '../../db/db.module';
 import {
   accountMembers,
   accounts,
   invitations,
-  notifications,
   userProfiles,
   users,
 } from '../../db/schema';
 import type { AuthContext } from '../../common/auth-context';
 import type { Env } from '../../config/env';
 import { MailService } from '../mail/mail.service';
+import { NotifierService } from '../notifications/notifier.service';
 
 const INVITE_TTL_DAYS = 14;
 
@@ -44,16 +44,29 @@ export interface PendingInvitePayload {
   devLink?: string;
 }
 
+export interface InvitePreview {
+  valid: boolean;
+  accountName?: string;
+  inviterName?: string;
+}
+
 @Injectable()
 export class MembersService {
   private readonly devEcho: boolean;
+  private readonly publicBaseUrl: string | null;
 
   constructor(
     @Inject(DRIZZLE) private readonly db: Database,
     private readonly mail: MailService,
+    private readonly notifier: NotifierService,
     config: ConfigService<Env, true>,
   ) {
-    this.devEcho = config.get('OTP_DEV_ECHO', { infer: true });
+    // Like the OTP echo, dev links (which carry the raw invite token) must
+    // never appear in production responses.
+    this.devEcho =
+      config.get('NODE_ENV', { infer: true }) !== 'production' &&
+      !!config.get('OTP_DEV_ECHO', { infer: true });
+    this.publicBaseUrl = config.get('PUBLIC_BASE_URL', { infer: true }) ?? null;
   }
 
   /** Account members plus, for admins, the outstanding invitations. */
@@ -90,7 +103,6 @@ export class MembersService {
         id: invitations.id,
         email: invitations.email,
         role: invitations.role,
-        token: invitations.token,
         expiresAt: invitations.expiresAt,
         invitedByName: userProfiles.fullName,
       })
@@ -107,13 +119,14 @@ export class MembersService {
 
     return {
       members,
+      // Tokens are stored hashed, so links can only be produced at invite
+      // time — re-inviting issues a fresh link.
       invitations: inviteRows.map((i) => ({
         id: i.id,
         email: i.email,
         role: i.role,
         invitedByName: i.invitedByName ?? '',
         expiresAt: i.expiresAt.toISOString(),
-        ...(this.devEcho ? { devLink: this.inviteLink(i.token) } : {}),
       })),
     };
   }
@@ -122,7 +135,7 @@ export class MembersService {
   async invite(
     auth: AuthContext,
     email: string,
-    role: 'admin' | 'member' | 'viewer',
+    role: 'admin' | 'member' | 'viewer' | 'guest',
   ): Promise<PendingInvitePayload> {
     this.assertAdmin(auth);
     const normalized = email.trim().toLowerCase();
@@ -166,7 +179,7 @@ export class MembersService {
         email: normalized,
         role,
         invitedByUserId: auth.userId,
-        token,
+        tokenHash: sha256(token),
         expiresAt,
       })
       .returning();
@@ -189,15 +202,21 @@ export class MembersService {
       this.inviteLink(token),
     );
 
-    // If they already have a Dayflow login, surface it in-app too.
+    // If they already have a Dayflow login, surface it in-app too. The invite
+    // email above is the delivery channel, so no second email here.
     if (existingUser) {
-      await this.db.insert(notifications).values({
-        accountId: auth.accountId,
-        userId: existingUser.id,
-        type: 'account_invite',
-        actorUserId: auth.userId,
-        payload: { accountName: account?.name ?? '', invitationId: invitation.id },
-      });
+      await this.notifier.dispatch(
+        [
+          {
+            accountId: auth.accountId,
+            userId: existingUser.id,
+            type: 'account_invite',
+            actorUserId: auth.userId,
+            payload: { accountName: account?.name ?? '', invitationId: invitation.id },
+          },
+        ],
+        { email: false },
+      );
     }
 
     return {
@@ -229,7 +248,7 @@ export class MembersService {
     const [invitation] = await this.db
       .select()
       .from(invitations)
-      .where(eq(invitations.token, token))
+      .where(eq(invitations.tokenHash, sha256(token)))
       .limit(1);
 
     if (!invitation || invitation.acceptedAt || invitation.expiresAt < new Date()) {
@@ -278,7 +297,7 @@ export class MembersService {
   async changeRole(
     auth: AuthContext,
     userId: string,
-    role: 'admin' | 'member' | 'viewer',
+    role: 'admin' | 'member' | 'viewer' | 'guest',
   ): Promise<MemberPayload> {
     this.assertAdmin(auth);
     if (userId === auth.userId && role !== 'admin') {
@@ -308,6 +327,66 @@ export class MembersService {
       status: updated.status,
       isYou: userId === auth.userId,
     };
+  }
+
+  /**
+   * Deactivating keeps a member's rows (assignments, updates, ownership) but
+   * blocks new sessions for this account; reactivating reverses it.
+   */
+  async setStatus(auth: AuthContext, userId: string, status: 'active' | 'deactivated'): Promise<MemberPayload> {
+    this.assertAdmin(auth);
+    if (userId === auth.userId && status === 'deactivated') {
+      throw new BadRequestException('You cannot deactivate yourself');
+    }
+    const [target] = await this.db
+      .select({ role: accountMembers.role, status: accountMembers.status })
+      .from(accountMembers)
+      .where(and(eq(accountMembers.accountId, auth.accountId), eq(accountMembers.userId, userId)))
+      .limit(1);
+    if (!target) throw new NotFoundException('Member not found');
+    if (status === 'deactivated' && target.role === 'admin') {
+      await this.assertNotLastActiveAdmin(auth);
+    }
+
+    const [updated] = await this.db
+      .update(accountMembers)
+      .set({ status })
+      .where(and(eq(accountMembers.accountId, auth.accountId), eq(accountMembers.userId, userId)))
+      .returning();
+
+    const [profile] = await this.db
+      .select({ fullName: userProfiles.fullName, avatarUrl: userProfiles.avatarUrl, email: users.email })
+      .from(users)
+      .leftJoin(userProfiles, eq(users.id, userProfiles.userId))
+      .where(eq(users.id, userId))
+      .limit(1);
+
+    return {
+      userId,
+      fullName: profile?.fullName ?? profile?.email ?? '',
+      email: profile?.email ?? '',
+      avatarUrl: profile?.avatarUrl ?? null,
+      role: updated.role,
+      status: updated.status,
+      isYou: userId === auth.userId,
+    };
+  }
+
+  /** An account must keep at least one admin who can still sign in. */
+  private async assertNotLastActiveAdmin(auth: AuthContext): Promise<void> {
+    const [admins] = await this.db
+      .select({ n: count() })
+      .from(accountMembers)
+      .where(
+        and(
+          eq(accountMembers.accountId, auth.accountId),
+          eq(accountMembers.role, 'admin'),
+          eq(accountMembers.status, 'active'),
+        ),
+      );
+    if (Number(admins?.n ?? 0) <= 1) {
+      throw new BadRequestException('An account must keep at least one active admin');
+    }
   }
 
   async remove(auth: AuthContext, userId: string): Promise<{ ok: true }> {
@@ -341,7 +420,45 @@ export class MembersService {
     }
   }
 
-  private inviteLink(token: string): string {
-    return `dayflow://invite/${token}`;
+  /**
+   * What the public invite landing page shows before the viewer has an app
+   * session: just enough to be welcoming, nothing sensitive.
+   */
+  async preview(token: string): Promise<InvitePreview> {
+    const [invitation] = await this.db
+      .select({
+        acceptedAt: invitations.acceptedAt,
+        expiresAt: invitations.expiresAt,
+        accountName: accounts.name,
+        inviterName: userProfiles.fullName,
+      })
+      .from(invitations)
+      .innerJoin(accounts, eq(invitations.accountId, accounts.id))
+      .leftJoin(userProfiles, eq(invitations.invitedByUserId, userProfiles.userId))
+      .where(eq(invitations.tokenHash, sha256(token)))
+      .limit(1);
+
+    if (!invitation || invitation.acceptedAt || invitation.expiresAt < new Date()) {
+      return { valid: false };
+    }
+    return {
+      valid: true,
+      accountName: invitation.accountName,
+      inviterName: invitation.inviterName ?? 'A teammate',
+    };
   }
+
+  /**
+   * Invite emails need a clickable https link, so when PUBLIC_BASE_URL is set
+   * the link points at this API's landing page (which hands off to the app);
+   * without it the raw deep link is the best available.
+   */
+  private inviteLink(token: string): string {
+    if (this.publicBaseUrl) return `${this.publicBaseUrl}/invite/${token}`;
+    return `dayflow:///invite/${token}`;
+  }
+}
+
+function sha256(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
 }

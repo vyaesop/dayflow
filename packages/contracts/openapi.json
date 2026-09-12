@@ -377,7 +377,36 @@
             "bearer": []
           }
         ],
-        "summary": "Board template gallery",
+        "summary": "Board template gallery: built-in templates followed by this account's own",
+        "tags": [
+          "boards"
+        ]
+      }
+    },
+    "/v1/templates/{id}": {
+      "delete": {
+        "operationId": "BoardsController_deleteTemplate",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Delete an account template (author or admin)",
         "tags": [
           "boards"
         ]
@@ -406,7 +435,7 @@
             "bearer": []
           }
         ],
-        "summary": "Full board payload: columns, groups, items, values, members",
+        "summary": "Full board payload: columns, groups, items (with subitems), values, members, views",
         "tags": [
           "boards"
         ]
@@ -443,13 +472,13 @@
             "bearer": []
           }
         ],
-        "summary": "Rename a board or change its description",
+        "summary": "Rename a board, change its description or its type",
         "tags": [
           "boards"
         ]
       },
       "delete": {
-        "operationId": "BoardsController_archiveBoard",
+        "operationId": "BoardsController_trashBoard",
         "parameters": [
           {
             "name": "id",
@@ -470,7 +499,7 @@
             "bearer": []
           }
         ],
-        "summary": "Archive a board",
+        "summary": "Move a board to the trash (purged after 30 days unless restored)",
         "tags": [
           "boards"
         ]
@@ -487,6 +516,14 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "viewId",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -499,7 +536,7 @@
             "bearer": []
           }
         ],
-        "summary": "Export the board as CSV",
+        "summary": "Export the board as CSV, optionally through a saved view's filters/sort/columns",
         "tags": [
           "boards"
         ]
@@ -588,6 +625,319 @@
           }
         ],
         "summary": "Create a board, optionally from a template",
+        "tags": [
+          "boards"
+        ]
+      }
+    },
+    "/v1/boards/{id}/archive": {
+      "post": {
+        "operationId": "BoardsController_archiveBoard",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Archive a board (kept indefinitely, restorable)",
+        "tags": [
+          "boards"
+        ]
+      }
+    },
+    "/v1/boards/{id}/restore": {
+      "post": {
+        "operationId": "BoardsController_restoreBoard",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Restore a board from the archive or the trash",
+        "tags": [
+          "boards"
+        ]
+      }
+    },
+    "/v1/boards/{id}/permanent": {
+      "delete": {
+        "operationId": "BoardsController_deleteBoardPermanently",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Permanently delete a trashed board (board owners / account admins)",
+        "tags": [
+          "boards"
+        ]
+      }
+    },
+    "/v1/boards/{id}/duplicate": {
+      "post": {
+        "operationId": "BoardsController_duplicateBoard",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DuplicateBoardDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Duplicate a board: structure, items and subitems, or everything incl. updates",
+        "tags": [
+          "boards"
+        ]
+      }
+    },
+    "/v1/boards/{id}/save-as-template": {
+      "post": {
+        "operationId": "BoardsController_saveAsTemplate",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SaveAsTemplateDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Save the board's structure (and optionally items) as an account template",
+        "tags": [
+          "boards"
+        ]
+      }
+    },
+    "/v1/boards/{id}/members": {
+      "get": {
+        "operationId": "BoardsController_listBoardMembers",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Board members with roles, plus whether the caller can manage them",
+        "tags": [
+          "boards"
+        ]
+      },
+      "post": {
+        "operationId": "BoardsController_addBoardMember",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddBoardMemberDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Add an account member to a board (board owners and admins)",
+        "tags": [
+          "boards"
+        ]
+      }
+    },
+    "/v1/boards/{id}/members/{userId}": {
+      "patch": {
+        "operationId": "BoardsController_changeBoardMemberRole",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "userId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangeBoardMemberRoleDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Change a board member's role (board owners and admins)",
+        "tags": [
+          "boards"
+        ]
+      },
+      "delete": {
+        "operationId": "BoardsController_removeBoardMember",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "userId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Remove someone from a board (owners/admins; anyone may remove themselves)",
         "tags": [
           "boards"
         ]
@@ -776,6 +1126,84 @@
         ]
       }
     },
+    "/v1/boards/{id}/items/batch": {
+      "post": {
+        "operationId": "BoardsController_batch",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchItemsDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Apply one action to many items at once (archive, trash, restore, duplicate, move, set_cell, delete_permanent)",
+        "tags": [
+          "boards"
+        ]
+      }
+    },
+    "/v1/items/{id}/subitems": {
+      "post": {
+        "operationId": "BoardsController_createSubitem",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateSubitemDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Add a subitem under an item (creates the board's subitem columns on first use)",
+        "tags": [
+          "boards"
+        ]
+      }
+    },
     "/v1/items/{id}": {
       "patch": {
         "operationId": "BoardsController_renameItem",
@@ -815,7 +1243,7 @@
         ]
       },
       "delete": {
-        "operationId": "BoardsController_archiveItem",
+        "operationId": "BoardsController_trashItem",
         "parameters": [
           {
             "name": "id",
@@ -836,7 +1264,7 @@
             "bearer": []
           }
         ],
-        "summary": "Archive an item",
+        "summary": "Move an item to the trash (purged after 30 days unless restored)",
         "tags": [
           "boards"
         ]
@@ -863,7 +1291,7 @@
             "bearer": []
           }
         ],
-        "summary": "Item detail with cell values, updates and activity",
+        "summary": "Item detail with cell values, subitems, updates and activity",
         "tags": [
           "items"
         ]
@@ -902,7 +1330,83 @@
             "bearer": []
           }
         ],
-        "summary": "Move an item within or between groups",
+        "summary": "Move an item within or between groups (subitems reorder among siblings)",
+        "tags": [
+          "boards"
+        ]
+      }
+    },
+    "/v1/items/{id}/move-preview": {
+      "get": {
+        "operationId": "BoardsController_movePreview",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "boardId",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Preview how an item's columns map onto another board before moving it",
+        "tags": [
+          "boards"
+        ]
+      }
+    },
+    "/v1/items/{id}/move-to-board": {
+      "post": {
+        "operationId": "BoardsController_moveToBoard",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MoveToBoardDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Move an item (with subitems, updates and files) to another board",
         "tags": [
           "boards"
         ]
@@ -931,7 +1435,94 @@
             "bearer": []
           }
         ],
-        "summary": "Duplicate an item with its cell values",
+        "summary": "Duplicate an item with its cell values and subitems",
+        "tags": [
+          "boards"
+        ]
+      }
+    },
+    "/v1/items/{id}/archive": {
+      "post": {
+        "operationId": "BoardsController_archiveItem",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Archive an item (kept indefinitely, restorable)",
+        "tags": [
+          "boards"
+        ]
+      }
+    },
+    "/v1/items/{id}/restore": {
+      "post": {
+        "operationId": "BoardsController_restoreItem",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Restore an item from the archive or the trash",
+        "tags": [
+          "boards"
+        ]
+      }
+    },
+    "/v1/items/{id}/permanent": {
+      "delete": {
+        "operationId": "BoardsController_deleteItemPermanently",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Permanently delete a trashed item (board owners / account admins)",
         "tags": [
           "boards"
         ]
@@ -1017,7 +1608,7 @@
             "bearer": []
           }
         ],
-        "summary": "Add a column to a board",
+        "summary": "Add a column to a board (item or subitem scope)",
         "tags": [
           "boards"
         ]
@@ -1086,6 +1677,314 @@
         "summary": "Delete a column and its values",
         "tags": [
           "boards"
+        ]
+      }
+    },
+    "/v1/columns/{id}/move": {
+      "post": {
+        "operationId": "BoardsController_moveColumn",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MoveColumnDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Reorder a column within its scope",
+        "tags": [
+          "boards"
+        ]
+      }
+    },
+    "/v1/notifications": {
+      "get": {
+        "operationId": "NotificationsController_list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Notification feed for the current user and account",
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
+    "/v1/notifications/read-all": {
+      "post": {
+        "operationId": "NotificationsController_markAllRead",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Mark every unread notification as read",
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
+    "/v1/notifications/{id}/read": {
+      "post": {
+        "operationId": "NotificationsController_markRead",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Mark one notification as read",
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
+    "/v1/boards/{id}/views": {
+      "get": {
+        "operationId": "ViewsController_list",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Saved views of a board, in display order",
+        "tags": [
+          "views"
+        ]
+      },
+      "post": {
+        "operationId": "ViewsController_create",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateViewDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Create a saved view (filters, sort, hidden columns, colors)",
+        "tags": [
+          "views"
+        ]
+      }
+    },
+    "/v1/views/{id}": {
+      "patch": {
+        "operationId": "ViewsController_update",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateViewDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Rename a view, replace its config, or make it the default",
+        "tags": [
+          "views"
+        ]
+      },
+      "delete": {
+        "operationId": "ViewsController_remove",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Delete a view (a board keeps at least one)",
+        "tags": [
+          "views"
+        ]
+      }
+    },
+    "/v1/views/{id}/move": {
+      "post": {
+        "operationId": "ViewsController_move",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MoveViewDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Reorder a view among its board's views",
+        "tags": [
+          "views"
+        ]
+      }
+    },
+    "/v1/views/{id}/duplicate": {
+      "post": {
+        "operationId": "ViewsController_duplicate",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Duplicate a view with its config",
+        "tags": [
+          "views"
         ]
       }
     },
@@ -1254,7 +2153,16 @@
     "/v1/me/feedback": {
       "post": {
         "operationId": "UsersController_feedback",
-        "parameters": [],
+        "parameters": [
+          {
+            "name": "user-agent",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -1301,6 +2209,10 @@
                     "format": "uuid"
                   },
                   "updateId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "columnId": {
                     "type": "string",
                     "format": "uuid"
                   }
@@ -1582,6 +2494,238 @@
         ]
       }
     },
+    "/v1/members/{userId}/deactivate": {
+      "post": {
+        "operationId": "MembersController_deactivate",
+        "parameters": [
+          {
+            "name": "userId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Deactivate a member: keeps their data, blocks their access (admins only)",
+        "tags": [
+          "members"
+        ]
+      }
+    },
+    "/v1/members/{userId}/reactivate": {
+      "post": {
+        "operationId": "MembersController_reactivate",
+        "parameters": [
+          {
+            "name": "userId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Reactivate a deactivated member (admins only)",
+        "tags": [
+          "members"
+        ]
+      }
+    },
+    "/v1/boards/{id}/activity": {
+      "get": {
+        "operationId": "ActivityController_list",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "event",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "actorId",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "itemId",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "ISO date (inclusive)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "ISO date (inclusive)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Board activity log with filters and keyset pagination",
+        "tags": [
+          "activity"
+        ]
+      }
+    },
+    "/v1/activity/{id}/undo": {
+      "post": {
+        "operationId": "ActivityController_undo",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Undo a change from the last 7 days",
+        "tags": [
+          "activity"
+        ]
+      }
+    },
+    "/v1/archive": {
+      "get": {
+        "operationId": "ArchiveController_listArchive",
+        "parameters": [
+          {
+            "name": "boardId",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Archived boards and items visible to the caller",
+        "tags": [
+          "archive"
+        ]
+      }
+    },
+    "/v1/trash": {
+      "get": {
+        "operationId": "ArchiveController_listTrash",
+        "parameters": [
+          {
+            "name": "boardId",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Trashed boards and items (purged 30 days after deletion)",
+        "tags": [
+          "archive"
+        ]
+      }
+    },
     "/v1/my-work": {
       "get": {
         "operationId": "ItemsController_myWork",
@@ -1590,8 +2734,8 @@
             "name": "includeDone",
             "required": false,
             "in": "query",
+            "description": "true to also list completed items",
             "schema": {
-              "example": "true",
               "type": "string"
             }
           }
@@ -1628,8 +2772,8 @@
             "name": "bookmarked",
             "required": false,
             "in": "query",
+            "description": "true to show only bookmarked updates",
             "schema": {
-              "example": "true",
               "type": "string"
             }
           }
@@ -1684,6 +2828,72 @@
           }
         ],
         "summary": "Post an update or a reply (notifies @mentions and the parent author)",
+        "tags": [
+          "items"
+        ]
+      }
+    },
+    "/v1/boards/{id}/updates": {
+      "get": {
+        "operationId": "ItemsController_boardUpdates",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Board discussion: updates posted on the board itself",
+        "tags": [
+          "items"
+        ]
+      },
+      "post": {
+        "operationId": "ItemsController_addBoardUpdate",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddUpdateDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Post to the board discussion",
         "tags": [
           "items"
         ]
@@ -1755,6 +2965,45 @@
         ]
       }
     },
+    "/v1/updates/{id}/reactions": {
+      "post": {
+        "operationId": "ItemsController_react",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReactDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Toggle an emoji reaction on an update",
+        "tags": [
+          "items"
+        ]
+      }
+    },
     "/v1/updates/{id}/like": {
       "post": {
         "operationId": "ItemsController_toggleLike",
@@ -1778,7 +3027,7 @@
             "bearer": []
           }
         ],
-        "summary": "Toggle your like on an update",
+        "summary": "Toggle your like (a 👍 reaction) on an update",
         "tags": [
           "items"
         ]
@@ -1862,9 +3111,9 @@
         ]
       }
     },
-    "/v1/notifications": {
+    "/v1/admin/account/deletion": {
       "get": {
-        "operationId": "NotificationsController_list",
+        "operationId": "AdminController_deletionStatus",
         "parameters": [],
         "responses": {
           "200": {
@@ -1876,15 +3125,13 @@
             "bearer": []
           }
         ],
-        "summary": "Notification feed for the current user and account",
+        "summary": "Whether (and when) this account is scheduled for deletion",
         "tags": [
-          "notifications"
+          "admin"
         ]
-      }
-    },
-    "/v1/notifications/read-all": {
+      },
       "post": {
-        "operationId": "NotificationsController_markAllRead",
+        "operationId": "AdminController_scheduleDeletion",
         "parameters": [],
         "responses": {
           "201": {
@@ -1896,27 +3143,16 @@
             "bearer": []
           }
         ],
-        "summary": "Mark every unread notification as read",
+        "summary": "Schedule this account for deletion after a 30-day grace period (admins only)",
         "tags": [
-          "notifications"
+          "admin"
         ]
-      }
-    },
-    "/v1/notifications/{id}/read": {
-      "post": {
-        "operationId": "NotificationsController_markRead",
-        "parameters": [
-          {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
+      },
+      "delete": {
+        "operationId": "AdminController_cancelDeletion",
+        "parameters": [],
         "responses": {
-          "201": {
+          "200": {
             "description": ""
           }
         },
@@ -1925,9 +3161,24 @@
             "bearer": []
           }
         ],
-        "summary": "Mark one notification as read",
+        "summary": "Cancel a scheduled account deletion (admins only)",
         "tags": [
-          "notifications"
+          "admin"
+        ]
+      }
+    },
+    "/healthz": {
+      "get": {
+        "operationId": "HealthController_health",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Health check (unauthenticated)",
+        "tags": [
+          "health"
         ]
       }
     }
@@ -2146,7 +3397,7 @@
           },
           "template": {
             "type": "string",
-            "description": "Template key from GET /v1/templates"
+            "description": "Template key from GET /v1/templates (built-in or custom_…)"
           }
         },
         "required": [
@@ -2161,8 +3412,98 @@
           },
           "description": {
             "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "main",
+              "shareable",
+              "private"
+            ],
+            "description": "Changing visibility takes a board owner or an account admin"
           }
         }
+      },
+      "DuplicateBoardDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Defaults to \"<name> (copy)\""
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "structure",
+              "items",
+              "items_and_updates"
+            ]
+          },
+          "workspaceId": {
+            "type": "string",
+            "description": "Defaults to the source board's workspace"
+          }
+        },
+        "required": [
+          "mode"
+        ]
+      },
+      "SaveAsTemplateDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "Sprint board"
+          },
+          "description": {
+            "type": "string"
+          },
+          "includeItems": {
+            "type": "boolean",
+            "description": "Snapshot the current items as sample rows"
+          }
+        },
+        "required": [
+          "name",
+          "includeItems"
+        ]
+      },
+      "AddBoardMemberDto": {
+        "type": "object",
+        "properties": {
+          "userId": {
+            "type": "string",
+            "description": "An active member of this account"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "owner",
+              "member",
+              "viewer"
+            ],
+            "default": "member"
+          }
+        },
+        "required": [
+          "userId"
+        ]
+      },
+      "ChangeBoardMemberRoleDto": {
+        "type": "object",
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": [
+              "owner",
+              "member",
+              "viewer"
+            ]
+          }
+        },
+        "required": [
+          "role"
+        ]
       },
       "CreateGroupDto": {
         "type": "object",
@@ -2244,6 +3585,64 @@
           "name"
         ]
       },
+      "BatchItemsDto": {
+        "type": "object",
+        "properties": {
+          "itemIds": {
+            "description": "Items on this board (top-level or subitems), 1..200",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "archive",
+              "trash",
+              "restore",
+              "duplicate",
+              "move",
+              "set_cell",
+              "delete_permanent"
+            ]
+          },
+          "groupId": {
+            "type": "string",
+            "description": "move: target group"
+          },
+          "columnId": {
+            "type": "string",
+            "description": "set_cell: column to write"
+          },
+          "value": {
+            "type": "object",
+            "nullable": true,
+            "description": "set_cell: value (null clears)"
+          }
+        },
+        "required": [
+          "itemIds",
+          "action"
+        ]
+      },
+      "CreateSubitemDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "Write the copy"
+          },
+          "afterItemId": {
+            "type": "object",
+            "nullable": true,
+            "description": "Place after this sibling; null puts it first; omit to append"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
       "RenameItemDto": {
         "type": "object",
         "properties": {
@@ -2260,7 +3659,7 @@
         "properties": {
           "groupId": {
             "type": "string",
-            "description": "Target group; omit to reorder within the current group"
+            "description": "Target group; omit to reorder within the current group (subitems: always omit)"
           },
           "afterItemId": {
             "type": "object",
@@ -2269,13 +3668,30 @@
           }
         }
       },
+      "MoveToBoardDto": {
+        "type": "object",
+        "properties": {
+          "boardId": {
+            "type": "string",
+            "description": "Destination board"
+          },
+          "groupId": {
+            "type": "string",
+            "description": "Group on the destination board"
+          }
+        },
+        "required": [
+          "boardId",
+          "groupId"
+        ]
+      },
       "SetCellValueDto": {
         "type": "object",
         "properties": {
           "value": {
             "type": "object",
             "nullable": true,
-            "description": "Shape depends on the column type: {labelId} for status, {userIds:[]} for people, {date,time?} for date, {text} for text, {number} for number, {checked} for checkbox. Send null to clear the cell.",
+            "description": "Shape depends on the column type: {labelId} for status, {userIds:[]} for people, {date,time?} for date, {text} for text/long_text, {number} for number, {checked} for checkbox, {email,label?}, {phone,countryCode?}, {rating}, {fileIds:[]}, {url,label?}, {address,lat?,lng?}, {from,to} for timeline, {optionIds:[]} for dropdown/tags. Send null to clear the cell.",
             "example": {
               "labelId": "done"
             }
@@ -2302,7 +3718,16 @@
               "timeline",
               "vote",
               "location",
-              "link"
+              "link",
+              "long_text",
+              "email",
+              "phone",
+              "files",
+              "rating",
+              "item_id",
+              "creation_log",
+              "last_updated",
+              "auto_number"
             ]
           },
           "title": {
@@ -2312,6 +3737,14 @@
           "settings": {
             "type": "object",
             "description": "Type-specific settings; sensible defaults are applied when omitted"
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "items",
+              "subitems"
+            ],
+            "default": "items"
           }
         },
         "required": [
@@ -2331,6 +3764,71 @@
           "width": {
             "type": "number",
             "minimum": 60
+          }
+        }
+      },
+      "MoveColumnDto": {
+        "type": "object",
+        "properties": {
+          "afterColumnId": {
+            "type": "object",
+            "nullable": true,
+            "description": "Place after this column (same scope); null moves it first"
+          }
+        }
+      },
+      "CreateViewDto": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "table",
+              "list",
+              "kanban",
+              "calendar",
+              "dashboard"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "example": "My open tasks"
+          },
+          "config": {
+            "type": "object",
+            "description": "ViewConfig: filters, sort, hiddenColumnIds, columnOrder, conditionalColors, laneColumnId, dateColumnId"
+          },
+          "isDefault": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "type",
+          "name"
+        ]
+      },
+      "UpdateViewDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "config": {
+            "type": "object"
+          },
+          "isDefault": {
+            "type": "boolean",
+            "description": "true makes this the default view; false is rejected — pick another default instead"
+          }
+        }
+      },
+      "MoveViewDto": {
+        "type": "object",
+        "properties": {
+          "afterViewId": {
+            "type": "object",
+            "nullable": true,
+            "description": "Place after this view; null moves it first"
           }
         }
       },
@@ -2407,7 +3905,8 @@
             "enum": [
               "admin",
               "member",
-              "viewer"
+              "viewer",
+              "guest"
             ],
             "default": "member"
           }
@@ -2436,7 +3935,8 @@
             "enum": [
               "admin",
               "member",
-              "viewer"
+              "viewer",
+              "guest"
             ]
           }
         },
@@ -2449,7 +3949,8 @@
         "properties": {
           "body": {
             "type": "string",
-            "example": "Kicked this off — @Alex Smith can you review?"
+            "example": "Kicked this off — **draft** ready. @[Alex Smith](user:2c3d…) can you review?",
+            "description": "Markdown-lite: **bold**, _italic_, ~~strike~~, `code`, [label](url), \"- \" / \"1. \" lists, @[Name](user:uuid), @[Everyone on this board](board)"
           },
           "parentId": {
             "type": "string",
@@ -2469,6 +3970,19 @@
         },
         "required": [
           "body"
+        ]
+      },
+      "ReactDto": {
+        "type": "object",
+        "properties": {
+          "emoji": {
+            "type": "string",
+            "example": "🎉",
+            "description": "One of 👍 ❤️ 🎉 😂 😮 😢 🙏 👀 🔥 ✅"
+          }
+        },
+        "required": [
+          "emoji"
         ]
       }
     }

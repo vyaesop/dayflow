@@ -1,4 +1,4 @@
-import { Inject, Injectable, UnauthorizedException } from '@nestjs/common';
+import { ForbiddenException, Inject, Injectable, UnauthorizedException } from '@nestjs/common';
 import { and, desc, eq } from 'drizzle-orm';
 import { Database, DRIZZLE } from '../../db/db.module';
 import { accountMembers, accounts, userProfiles, users } from '../../db/schema';
@@ -40,6 +40,19 @@ export class SessionService {
     @Inject(DRIZZLE) private readonly db: Database,
     private readonly tokens: TokenService,
   ) {}
+
+  /** Deactivated members keep their data but cannot open a session for the account. */
+  async assertActiveMembership(userId: string, accountId: string): Promise<void> {
+    const [membership] = await this.db
+      .select({ status: accountMembers.status })
+      .from(accountMembers)
+      .where(and(eq(accountMembers.userId, userId), eq(accountMembers.accountId, accountId)))
+      .limit(1);
+    if (!membership) throw new UnauthorizedException('You are not a member of this account');
+    if (membership.status === 'deactivated') {
+      throw new ForbiddenException('This account has been deactivated for you');
+    }
+  }
 
   async accountsForUser(userId: string): Promise<AccountSummary[]> {
     const rows = await this.db
@@ -97,6 +110,7 @@ export class SessionService {
   }
 
   async createSession(userId: string, accountId: string, userAgent?: string): Promise<AuthSession> {
+    await this.assertActiveMembership(userId, accountId);
     const me = await this.buildMe(userId, accountId);
     await this.db
       .update(accountMembers)

@@ -1,8 +1,10 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, eq, ilike, isNull, or, sql } from 'drizzle-orm';
+import { and, eq, ilike, or, sql } from 'drizzle-orm';
 import { Database, DRIZZLE } from '../../db/db.module';
+import { boardIsLive, itemIsLive } from '../../db/live';
 import { boards, groups, items, workspaces } from '../../db/schema';
 import type { AuthContext } from '../../common/auth-context';
+import { BoardAccessService } from '../access/board-access.service';
 
 export interface SearchResults {
   boards: Array<{ id: string; name: string; workspaceName: string }>;
@@ -11,7 +13,10 @@ export interface SearchResults {
 
 @Injectable()
 export class SearchService {
-  constructor(@Inject(DRIZZLE) private readonly db: Database) {}
+  constructor(
+    @Inject(DRIZZLE) private readonly db: Database,
+    private readonly boardAccess: BoardAccessService,
+  ) {}
 
   /**
    * Substring search across board and item names within the caller's account.
@@ -31,7 +36,8 @@ export class SearchService {
         .where(
           and(
             eq(boards.accountId, auth.accountId),
-            isNull(boards.archivedAt),
+            boardIsLive(),
+            this.boardAccess.visibleTo(auth),
             or(ilike(boards.name, pattern), ilike(boards.description, pattern)),
           ),
         )
@@ -51,8 +57,9 @@ export class SearchService {
         .where(
           and(
             eq(boards.accountId, auth.accountId),
-            isNull(items.archivedAt),
-            isNull(boards.archivedAt),
+            itemIsLive(),
+            boardIsLive(),
+            this.boardAccess.visibleTo(auth),
             ilike(items.name, pattern),
           ),
         )

@@ -17,6 +17,8 @@ const pg = new EmbeddedPostgres({
   password: 'dayflow',
   port: 5433,
   persistent: true,
+  // UTF-8 so emoji reactions and non-Latin text store exactly as on Neon.
+  initdbFlags: ['--encoding=UTF8', '--locale=C'],
 });
 
 if (!alreadyInitialised) {

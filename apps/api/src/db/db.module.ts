@@ -24,7 +24,8 @@ function isNeonUrl(url: string): boolean {
       inject: [ConfigService],
       useFactory: (config: ConfigService<Env, true>): Database => {
         const liveUrl: string | undefined = config.get('DB_LIVE_URL', { infer: true });
-        const url = liveUrl ?? config.getOrThrow('DATABASE_URL', { infer: true });
+        // An empty DB_LIVE_URL counts as unset, so it can be overridden away in a shell.
+        const url = liveUrl?.trim() ? liveUrl : config.getOrThrow('DATABASE_URL', { infer: true });
         if (isNeonUrl(url)) {
           neonConfig.webSocketConstructor = ws;
           const pool = new NeonPool({ connectionString: url });

@@ -8,6 +8,27 @@
       "when": 1783093574930,
       "tag": "0000_yummy_strong_guy",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1787404431499,
+      "tag": "0001_production_features",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1789211250839,
+      "tag": "0002_p0_board_parity",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1789211275829,
+      "tag": "0003_drop_update_likes",
+      "breakpoints": true
     }
   ]
 }

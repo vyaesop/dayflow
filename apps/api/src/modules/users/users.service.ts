@@ -1,7 +1,8 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { eq, sql } from 'drizzle-orm';
 import { Database, DRIZZLE } from '../../db/db.module';
-import { notificationPrefs, userProfiles } from '../../db/schema';
+import { feedback, notificationPrefs, userProfiles } from '../../db/schema';
+import type { AuthContext } from '../../common/auth-context';
 
 @Injectable()
 export class UsersService {
@@ -44,6 +45,15 @@ export class UsersService {
       .update(userProfiles)
       .set({ avatarUrl, updatedAt: new Date() })
       .where(eq(userProfiles.userId, userId));
+  }
+
+  async saveFeedback(auth: AuthContext, message: string, userAgent?: string): Promise<void> {
+    await this.db.insert(feedback).values({
+      accountId: auth.accountId,
+      userId: auth.userId,
+      message,
+      userAgent: userAgent?.slice(0, 400),
+    });
   }
 
   async completeChecklistStep(userId: string, step: string): Promise<void> {

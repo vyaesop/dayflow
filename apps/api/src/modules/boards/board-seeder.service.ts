@@ -88,8 +88,10 @@ export class BoardSeederService {
             boardId: board.id,
             groupId: seed.groupId,
             name: seed.name,
-            position: position++,
+            position,
+            serial: position++,
             createdByUserId: args.userId,
+            updatedByUserId: args.userId,
           })
           .returning({ id: items.id });
         if (seed.statusLabelId) {

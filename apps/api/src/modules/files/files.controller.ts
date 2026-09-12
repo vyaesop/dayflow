@@ -13,12 +13,14 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiPropertyOptional, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { IsOptional, IsUUID } from 'class-validator';
 import type { Response } from 'express';
 import { CurrentAuth } from '../../common/current-auth.decorator';
 import { JwtAuthGuard } from '../../common/jwt-auth.guard';
 import type { AuthContext } from '../../common/auth-context';
-import { FilesService } from './files.service';
+import { planServing } from './files.policy';
+import { FilesService, MAX_UPLOAD_BYTES } from './files.service';
 
 export class UploadTargetDto {
   @ApiPropertyOptional({ description: 'Attach to this item' })
@@ -30,6 +32,11 @@ export class UploadTargetDto {
   @IsOptional()
   @IsUUID()
   updateId?: string;
+
+  @ApiPropertyOptional({ description: 'With itemId: put the file in this Files column cell' })
+  @IsOptional()
+  @IsUUID()
+  columnId?: string;
 }
 
 @ApiTags('files')
@@ -40,7 +47,10 @@ export class FilesController {
   @Post('files')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
-  @UseInterceptors(FileInterceptor('file'))
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  // The multer limit rejects oversized bodies during streaming, before they
+  // are buffered in memory; the service's own size check is a backstop.
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 } }))
   @ApiConsumes('multipart/form-data')
   @ApiBody({
     schema: {
@@ -49,6 +59,7 @@ export class FilesController {
         file: { type: 'string', format: 'binary' },
         itemId: { type: 'string', format: 'uuid' },
         updateId: { type: 'string', format: 'uuid' },
+        columnId: { type: 'string', format: 'uuid' },
       },
     },
   })
@@ -81,13 +92,18 @@ export class FilesController {
    * Serves file bytes. Unauthenticated by design: image widgets cannot attach
    * a bearer token, so access control is the unguessable UUID (dev-grade;
    * production swaps this for presigned object-storage URLs).
+   *
+   * Content is never trusted: only allowlisted image types render inline,
+   * everything else downloads as an opaque attachment (see files.policy.ts).
    */
   @Get('files/:id/content')
   @ApiOperation({ summary: 'File bytes (unauthenticated, unguessable-id access)' })
   async content(@Param('id', ParseUUIDPipe) id: string, @Res() res: Response) {
     const { stream, mimeType, fileName } = await this.files.openStream(id);
-    res.setHeader('Content-Type', mimeType);
-    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(fileName)}"`);
+    const plan = planServing(mimeType);
+    res.setHeader('Content-Type', plan.contentType);
+    res.setHeader('Content-Disposition', `${plan.disposition}; filename="${encodeURIComponent(fileName)}"`);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Cache-Control', 'private, max-age=3600');
     stream.pipe(res);
   }

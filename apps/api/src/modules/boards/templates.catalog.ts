@@ -10,6 +10,8 @@ export interface TemplateColumn {
   type: string;
   title: string;
   settings?: Record<string, unknown>;
+  /** `items` (default) or `subitems`. */
+  scope?: 'items' | 'subitems';
 }
 
 export interface TemplateItem {
@@ -224,5 +226,6 @@ export function templateGallery() {
     accentColor: t.accentColor,
     columnCount: t.columns.length,
     groupCount: t.groups.length,
+    itemCount: t.items.length,
   }));
 }

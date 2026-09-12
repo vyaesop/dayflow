@@ -1,22 +1,33 @@
 import { BadRequestException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
-import { and, asc, count, desc, eq, inArray, isNull } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, isNull, ne, or, type SQL } from 'drizzle-orm';
 import { Database, DRIZZLE } from '../../db/db.module';
+import { boardIsLive, itemIsLive } from '../../db/live';
 import {
   accountMembers,
-  activityLog,
+  boardMembers,
   boards,
   columns,
   columnValues,
   groups,
   items,
-  notifications,
   updateBookmarks,
-  updateLikes,
+  updateReactions,
   updates,
   userProfiles,
   workspaces,
 } from '../../db/schema';
 import type { AuthContext } from '../../common/auth-context';
+import { BoardAccessService } from '../access/board-access.service';
+import { BoardContextService } from '../access/board-context.service';
+import { ActivityService, type ActivityEntry } from '../activity/activity.service';
+import { presentColumn, presentItem, type ColumnPayload, type ItemPayload } from '../boards/presenters';
+import { FilesService, type FilePayload } from '../files/files.service';
+import { NotifierService } from '../notifications/notifier.service';
+import { docToPlainText, mentionsIn, normalizeStoredDoc, parseMarkdownLite, serializeDoc, type Doc } from './rich-text';
+
+/** Emoji the API accepts as reactions, in picker order. */
+export const REACTION_EMOJIS = ['👍', '❤️', '🎉', '😂', '😮', '😢', '🙏', '👀', '🔥', '✅'] as const;
+const LIKE_EMOJI = '👍';
 
 export interface ItemDetailPayload {
   id: string;
@@ -25,21 +36,42 @@ export interface ItemDetailPayload {
   group: { id: string; title: string; color: string };
   workspaceName: string;
   createdAt: string;
+  updatedAt: string;
+  createdByUserId: string | null;
+  updatedByUserId: string | null;
+  serial: number;
+  parent: { id: string; name: string } | null;
   values: Record<string, unknown>;
-  columns: Array<{ id: string; type: string; title: string; settings: unknown; position: number }>;
+  /** Columns of this item's level (item columns, or the subitem set for a subitem). */
+  columns: ColumnPayload[];
+  subitemColumns: ColumnPayload[];
+  subitems: ItemPayload[];
   updates: UpdatePayload[];
-  activity: ActivityPayload[];
+  activity: ActivityEntry[];
+  canEdit: boolean;
+}
+
+export interface ReactionPayload {
+  emoji: string;
+  count: number;
+  reactedByMe: boolean;
 }
 
 export interface UpdatePayload {
   id: string;
+  /** Plain text (legacy clients). */
   body: string;
+  /** Canonical markdown-lite for editing. */
+  markdown: string;
+  doc: Doc;
   author: { userId: string; fullName: string; avatarUrl: string | null };
   createdAt: string;
   editedAt: string | null;
+  reactions: ReactionPayload[];
   likesCount: number;
   likedByMe: boolean;
   bookmarkedByMe: boolean;
+  files: FilePayload[];
   replies: UpdatePayload[];
 }
 
@@ -50,24 +82,33 @@ export interface FeedEntry extends UpdatePayload {
   itemName: string | null;
 }
 
-export interface ActivityPayload {
+interface UpdateRow {
   id: string;
-  event: string;
-  payload: unknown;
-  actor: { userId: string; fullName: string } | null;
-  createdAt: string;
+  body: unknown;
+  bodyText: string;
+  createdAt: Date;
+  editedAt: Date | null;
+  parentId: string | null;
+  authorUserId: string;
+  authorName: string;
+  authorAvatar: string | null;
 }
 
 @Injectable()
 export class ItemsService {
-  constructor(@Inject(DRIZZLE) private readonly db: Database) {}
+  constructor(
+    @Inject(DRIZZLE) private readonly db: Database,
+    private readonly notifier: NotifierService,
+    private readonly boardAccess: BoardAccessService,
+    private readonly ctx: BoardContextService,
+    private readonly activity: ActivityService,
+    private readonly files: FilesService,
+  ) {}
 
   async getItem(auth: AuthContext, itemId: string): Promise<ItemDetailPayload> {
     const [row] = await this.db
       .select({
-        id: items.id,
-        name: items.name,
-        createdAt: items.createdAt,
+        item: items,
         boardId: boards.id,
         boardName: boards.name,
         groupId: groups.id,
@@ -79,79 +120,129 @@ export class ItemsService {
       .innerJoin(boards, eq(items.boardId, boards.id))
       .innerJoin(groups, eq(items.groupId, groups.id))
       .innerJoin(workspaces, eq(boards.workspaceId, workspaces.id))
-      .where(and(eq(items.id, itemId), eq(boards.accountId, auth.accountId), isNull(items.archivedAt)))
+      .where(
+        and(
+          eq(items.id, itemId),
+          eq(boards.accountId, auth.accountId),
+          itemIsLive(),
+          boardIsLive(),
+          this.boardAccess.visibleTo(auth),
+        ),
+      )
       .limit(1);
     if (!row) throw new NotFoundException('Item not found');
+    const item = row.item;
 
-    const [cols, valueRows, updateRows, activityRows] = await Promise.all([
+    const [cols, valueRows, updateRows, activityRows, subRows, parentRow, canEdit] = await Promise.all([
       this.db.select().from(columns).where(eq(columns.boardId, row.boardId)).orderBy(asc(columns.position)),
       this.db.select().from(columnValues).where(eq(columnValues.itemId, itemId)),
       this.hydratedUpdates(auth, eq(updates.itemId, itemId)),
-      this.db
-        .select({
-          id: activityLog.id,
-          event: activityLog.event,
-          payload: activityLog.payload,
-          createdAt: activityLog.createdAt,
-          actorUserId: activityLog.actorUserId,
-          actorName: userProfiles.fullName,
-        })
-        .from(activityLog)
-        .leftJoin(userProfiles, eq(activityLog.actorUserId, userProfiles.userId))
-        .where(eq(activityLog.itemId, itemId))
-        .orderBy(desc(activityLog.createdAt))
-        .limit(50),
+      this.activity.forItem(itemId),
+      item.parentItemId
+        ? Promise.resolve([])
+        : this.db
+            .select()
+            .from(items)
+            .where(and(eq(items.parentItemId, itemId), itemIsLive()))
+            .orderBy(asc(items.position)),
+      item.parentItemId
+        ? this.db.select({ id: items.id, name: items.name }).from(items).where(eq(items.id, item.parentItemId)).limit(1)
+        : Promise.resolve([]),
+      this.ctx.canEdit(auth, row.boardId),
     ]);
 
     const values: Record<string, unknown> = {};
     for (const v of valueRows) values[v.columnId] = v.value;
 
+    const subIds = subRows.map((s) => s.id);
+    const [subValues, subUpdateCounts] = await Promise.all([
+      subIds.length ? this.db.select().from(columnValues).where(inArray(columnValues.itemId, subIds)) : Promise.resolve([]),
+      subIds.length
+        ? this.db
+            .select({ itemId: updates.itemId, n: count() })
+            .from(updates)
+            .where(inArray(updates.itemId, subIds))
+            .groupBy(updates.itemId)
+        : Promise.resolve([] as Array<{ itemId: string | null; n: number }>),
+    ]);
+    const subitems = subRows.map((s) => {
+      const bag: Record<string, unknown> = {};
+      for (const v of subValues) if (v.itemId === s.id) bag[v.columnId] = v.value;
+      return presentItem(s, bag, Number(subUpdateCounts.find((u) => u.itemId === s.id)?.n ?? 0));
+    });
+
+    const ownScope = item.parentItemId ? 'subitems' : 'items';
     return {
-      id: row.id,
-      name: row.name,
+      id: item.id,
+      name: item.name,
       board: { id: row.boardId, name: row.boardName },
       group: { id: row.groupId, title: row.groupTitle, color: row.groupColor },
       workspaceName: row.workspaceName,
-      createdAt: row.createdAt.toISOString(),
+      createdAt: item.createdAt.toISOString(),
+      updatedAt: item.updatedAt.toISOString(),
+      createdByUserId: item.createdByUserId,
+      updatedByUserId: item.updatedByUserId,
+      serial: item.serial,
+      parent: parentRow[0] ? { id: parentRow[0].id, name: parentRow[0].name } : null,
       values,
-      columns: cols.map((c) => ({
-        id: c.id,
-        type: c.type,
-        title: c.title,
-        settings: c.settings,
-        position: c.position,
-      })),
+      columns: cols.filter((c) => c.scope === ownScope).map(presentColumn),
+      subitemColumns: cols.filter((c) => c.scope === 'subitems').map(presentColumn),
+      subitems,
       updates: updateRows,
-      activity: activityRows.map((a) => ({
-        id: a.id,
-        event: a.event,
-        payload: a.payload,
-        actor: a.actorUserId ? { userId: a.actorUserId, fullName: a.actorName ?? '' } : null,
-        createdAt: a.createdAt.toISOString(),
-      })),
+      activity: activityRows,
+      canEdit,
     };
   }
 
-  /**
-   * Posts an update on an item. `@mentions` are resolved against account
-   * members and notified.
-   */
-  async addUpdate(auth: AuthContext, itemId: string, body: string, parentId?: string): Promise<UpdatePayload> {
-    const item = await this.itemForWrite(auth, itemId);
-    const mentioned = await this.resolveMentions(auth, body);
+  // ------------------------------------------------------------------- updates
 
-    // A reply must target a top-level update on the same item.
+  /** Posts an update (or reply) on an item. */
+  async addUpdate(auth: AuthContext, itemId: string, body: string, parentId?: string): Promise<UpdatePayload> {
+    const item = await this.ctx.writableItem(auth, itemId);
+    return this.postUpdate(auth, { boardId: item.boardId, itemId: item.id, itemName: item.name }, body, parentId);
+  }
+
+  /** Board discussion: updates that belong to the board rather than one item. */
+  async addBoardUpdate(auth: AuthContext, boardId: string, body: string, parentId?: string): Promise<UpdatePayload> {
+    const board = await this.ctx.writableBoard(auth, boardId);
+    return this.postUpdate(auth, { boardId: board.id, itemId: null, itemName: null }, body, parentId);
+  }
+
+  async boardUpdates(auth: AuthContext, boardId: string): Promise<UpdatePayload[]> {
+    await this.ctx.visibleBoard(auth, boardId);
+    return this.hydratedUpdates(auth, and(eq(updates.boardId, boardId), isNull(updates.itemId))!);
+  }
+
+  private async postUpdate(
+    auth: AuthContext,
+    target: { boardId: string; itemId: string | null; itemName: string | null },
+    body: string,
+    parentId?: string,
+  ): Promise<UpdatePayload> {
+    const doc = parseMarkdownLite(body);
+    const bodyText = docToPlainText(doc);
+    if (!bodyText.trim()) throw new BadRequestException('An update needs some text');
+    const { userIds: tokenMentions, everyone } = mentionsIn(doc);
+    const legacyMentions = tokenMentions.length || everyone ? [] : await this.resolveLegacyMentions(auth, bodyText);
+
+    // A reply must target a top-level update on the same item/board.
     let parentAuthorId: string | null = null;
     if (parentId) {
       const [parent] = await this.db
-        .select({ id: updates.id, itemId: updates.itemId, parentId: updates.parentId, authorUserId: updates.authorUserId })
+        .select({ id: updates.id, itemId: updates.itemId, boardId: updates.boardId, parentId: updates.parentId, authorUserId: updates.authorUserId })
         .from(updates)
         .where(eq(updates.id, parentId))
         .limit(1);
-      if (!parent || parent.itemId !== itemId) throw new NotFoundException('Update to reply to not found');
+      if (!parent || parent.itemId !== target.itemId || parent.boardId !== target.boardId) {
+        throw new NotFoundException('Update to reply to not found');
+      }
       if (parent.parentId) throw new BadRequestException('Replies cannot be nested further');
       parentAuthorId = parent.authorUserId;
     }
+
+    const mentioned = await this.activeMembers(auth, [...new Set([...tokenMentions, ...legacyMentions])]);
+    const audience = everyone ? await this.boardAudience(auth, target.boardId) : [];
+    const notifyMention = [...new Set([...mentioned, ...audience])].filter((id) => id !== auth.userId);
 
     const [profile] = await this.db
       .select({ fullName: userProfiles.fullName, avatarUrl: userProfiles.avatarUrl })
@@ -162,118 +253,106 @@ export class ItemsService {
     const [created] = await this.db
       .insert(updates)
       .values({
-        boardId: item.boardId,
-        itemId,
+        boardId: target.boardId,
+        itemId: target.itemId,
         authorUserId: auth.userId,
         parentId: parentId ?? null,
-        // The rich-text editor is not built yet; store a single paragraph so the
-        // document shape is already forward-compatible.
-        body: { type: 'doc', content: [{ type: 'paragraph', text: body }] },
-        bodyText: body,
-        mentionedUserIds: mentioned,
+        body: doc,
+        bodyText,
+        mentionedUserIds: notifyMention,
       })
       .returning();
 
-    // Replying notifies the parent author (never yourself).
-    if (parentAuthorId && parentAuthorId !== auth.userId) {
-      await this.db.insert(notifications).values({
-        accountId: auth.accountId,
-        userId: parentAuthorId,
-        type: 'reply',
-        actorUserId: auth.userId,
-        payload: {
-          boardId: item.boardId,
-          itemId,
-          itemName: item.name,
-          updateId: created.id,
-          snippet: body.slice(0, 140),
-        },
-      });
-    }
+    const [board] = await this.db.select({ name: boards.name }).from(boards).where(eq(boards.id, target.boardId)).limit(1);
+    const snippet = bodyText.slice(0, 140);
+    const basePayload = {
+      boardId: target.boardId,
+      boardName: board?.name ?? '',
+      itemId: target.itemId ?? undefined,
+      itemName: target.itemName ?? board?.name ?? '',
+      updateId: created.id,
+      snippet,
+    };
 
-    if (mentioned.length) {
-      const [board] = await this.db
-        .select({ name: boards.name })
-        .from(boards)
-        .where(eq(boards.id, item.boardId))
-        .limit(1);
-      await this.db.insert(notifications).values(
-        mentioned.map((userId) => ({
+    // Replying notifies the parent author (never yourself, never twice).
+    if (parentAuthorId && parentAuthorId !== auth.userId && !notifyMention.includes(parentAuthorId)) {
+      await this.notifier.dispatch([
+        { accountId: auth.accountId, userId: parentAuthorId, type: 'reply', actorUserId: auth.userId, payload: basePayload },
+      ]);
+    }
+    if (notifyMention.length) {
+      await this.notifier.dispatch(
+        notifyMention.map((userId) => ({
           accountId: auth.accountId,
           userId,
           type: 'mention' as const,
           actorUserId: auth.userId,
-          payload: {
-            boardId: item.boardId,
-            boardName: board?.name ?? '',
-            itemId,
-            itemName: item.name,
-            updateId: created.id,
-            snippet: body.slice(0, 140),
-          },
+          payload: { ...basePayload, everyone: everyone && !mentioned.includes(userId) },
         })),
       );
     }
 
     return {
       id: created.id,
-      body: created.bodyText,
-      author: {
-        userId: auth.userId,
-        fullName: profile?.fullName ?? '',
-        avatarUrl: profile?.avatarUrl ?? null,
-      },
+      body: bodyText,
+      markdown: serializeDoc(doc),
+      doc,
+      author: { userId: auth.userId, fullName: profile?.fullName ?? '', avatarUrl: profile?.avatarUrl ?? null },
       createdAt: created.createdAt.toISOString(),
       editedAt: null,
+      reactions: [],
       likesCount: 0,
       likedByMe: false,
       bookmarkedByMe: false,
+      files: [],
       replies: [],
     };
   }
 
-  async editUpdate(auth: AuthContext, updateId: string, body: string): Promise<{ ok: true }> {
-    const [row] = await this.db
-      .select({ id: updates.id, authorUserId: updates.authorUserId })
-      .from(updates)
-      .innerJoin(boards, eq(updates.boardId, boards.id))
-      .where(and(eq(updates.id, updateId), eq(boards.accountId, auth.accountId)))
-      .limit(1);
-    if (!row) throw new NotFoundException('Update not found');
+  async editUpdate(auth: AuthContext, updateId: string, body: string): Promise<UpdatePayload> {
+    const row = await this.updateInAccount(auth, updateId);
     if (row.authorUserId !== auth.userId) {
       throw new ForbiddenException('You can only edit your own updates');
     }
+    const doc = parseMarkdownLite(body);
+    const bodyText = docToPlainText(doc);
+    if (!bodyText.trim()) throw new BadRequestException('An update needs some text');
+    const { userIds } = mentionsIn(doc);
+    const mentioned = await this.activeMembers(auth, userIds);
 
     await this.db
       .update(updates)
-      .set({
-        body: { type: 'doc', content: [{ type: 'paragraph', text: body }] },
-        bodyText: body,
-        editedAt: new Date(),
-      })
+      .set({ body: doc, bodyText, mentionedUserIds: mentioned, editedAt: new Date() })
       .where(eq(updates.id, updateId));
-    return { ok: true };
+    const [hydrated] = await this.hydratedUpdates(auth, eq(updates.id, updateId), { includeReplies: false });
+    return hydrated;
   }
 
-  async toggleLike(auth: AuthContext, updateId: string): Promise<{ liked: boolean; likesCount: number }> {
+  /** Toggles one emoji reaction and returns the update's reaction summary. */
+  async toggleReaction(auth: AuthContext, updateId: string, emoji: string): Promise<{ reactions: ReactionPayload[] }> {
+    if (!REACTION_EMOJIS.includes(emoji as (typeof REACTION_EMOJIS)[number])) {
+      throw new BadRequestException(`emoji must be one of ${REACTION_EMOJIS.join(' ')}`);
+    }
     await this.updateInAccount(auth, updateId);
     const [existing] = await this.db
-      .select({ id: updateLikes.id })
-      .from(updateLikes)
-      .where(and(eq(updateLikes.updateId, updateId), eq(updateLikes.userId, auth.userId)))
+      .select({ id: updateReactions.id })
+      .from(updateReactions)
+      .where(and(eq(updateReactions.updateId, updateId), eq(updateReactions.userId, auth.userId), eq(updateReactions.emoji, emoji)))
       .limit(1);
-
     if (existing) {
-      await this.db.delete(updateLikes).where(eq(updateLikes.id, existing.id));
+      await this.db.delete(updateReactions).where(eq(updateReactions.id, existing.id));
     } else {
-      await this.db.insert(updateLikes).values({ updateId, userId: auth.userId });
+      await this.db.insert(updateReactions).values({ updateId, userId: auth.userId, emoji });
     }
+    const summary = await this.reactionSummary(auth, [updateId]);
+    return { reactions: summary.get(updateId) ?? [] };
+  }
 
-    const [likes] = await this.db
-      .select({ n: count() })
-      .from(updateLikes)
-      .where(eq(updateLikes.updateId, updateId));
-    return { liked: !existing, likesCount: Number(likes?.n ?? 0) };
+  /** Legacy alias: a like is a 👍 reaction. */
+  async toggleLike(auth: AuthContext, updateId: string): Promise<{ liked: boolean; likesCount: number }> {
+    const { reactions } = await this.toggleReaction(auth, updateId, LIKE_EMOJI);
+    const thumbs = reactions.find((r) => r.emoji === LIKE_EMOJI);
+    return { liked: thumbs?.reactedByMe ?? false, likesCount: thumbs?.count ?? 0 };
   }
 
   async toggleBookmark(auth: AuthContext, updateId: string): Promise<{ bookmarked: boolean }> {
@@ -283,7 +362,6 @@ export class ItemsService {
       .from(updateBookmarks)
       .where(and(eq(updateBookmarks.updateId, updateId), eq(updateBookmarks.userId, auth.userId)))
       .limit(1);
-
     if (existing) {
       await this.db.delete(updateBookmarks).where(eq(updateBookmarks.id, existing.id));
       return { bookmarked: false };
@@ -296,12 +374,13 @@ export class ItemsService {
    * Company-wide update feed: top-level updates across every board in the
    * account, optionally narrowed to one board or to bookmarks only.
    */
-  async updateFeed(
-    auth: AuthContext,
-    filter: { boardId?: string; bookmarked?: boolean },
-  ): Promise<FeedEntry[]> {
-    const conditions = [eq(boards.accountId, auth.accountId), isNull(updates.parentId)];
+  async updateFeed(auth: AuthContext, filter: { boardId?: string; bookmarked?: boolean }): Promise<FeedEntry[]> {
+    const conditions: SQL[] = [eq(boards.accountId, auth.accountId), isNull(updates.parentId), boardIsLive()];
+    const visibility = this.boardAccess.visibleTo(auth);
+    if (visibility) conditions.push(visibility);
     if (filter.boardId) conditions.push(eq(updates.boardId, filter.boardId));
+    // Updates on archived/trashed items stay out of the feed.
+    conditions.push(or(isNull(updates.itemId), itemIsLive())!);
 
     const rows = await this.db
       .select({
@@ -319,16 +398,20 @@ export class ItemsService {
       .orderBy(desc(updates.createdAt))
       .limit(50);
 
-    const hydrated = await this.decorate(auth, rows.map((r) => ({
-      id: r.update.id,
-      bodyText: r.update.bodyText,
-      createdAt: r.update.createdAt,
-      editedAt: r.update.editedAt,
-      parentId: r.update.parentId,
-      authorUserId: r.update.authorUserId,
-      authorName: r.authorName,
-      authorAvatar: r.authorAvatar,
-    })));
+    const hydrated = await this.decorate(
+      auth,
+      rows.map((r) => ({
+        id: r.update.id,
+        body: r.update.body,
+        bodyText: r.update.bodyText,
+        createdAt: r.update.createdAt,
+        editedAt: r.update.editedAt,
+        parentId: r.update.parentId,
+        authorUserId: r.update.authorUserId,
+        authorName: r.authorName,
+        authorAvatar: r.authorAvatar,
+      })),
+    );
 
     const entries: FeedEntry[] = rows.map((r, index) => ({
       ...hydrated[index],
@@ -337,23 +420,15 @@ export class ItemsService {
       itemId: r.update.itemId,
       itemName: r.itemName,
     }));
-
     return filter.bookmarked ? entries.filter((e) => e.bookmarkedByMe) : entries;
   }
 
   async deleteUpdate(auth: AuthContext, updateId: string): Promise<{ ok: true }> {
-    const [row] = await this.db
-      .select({ id: updates.id, authorUserId: updates.authorUserId })
-      .from(updates)
-      .innerJoin(boards, eq(updates.boardId, boards.id))
-      .where(and(eq(updates.id, updateId), eq(boards.accountId, auth.accountId)))
-      .limit(1);
-    if (!row) throw new NotFoundException('Update not found');
+    const row = await this.updateInAccount(auth, updateId);
     // Authors delete their own; admins can remove anyone's.
     if (row.authorUserId !== auth.userId && auth.role !== 'admin') {
       throw new ForbiddenException('You can only delete your own updates');
     }
-
     // Replies have no FK to their parent, so remove them explicitly.
     await this.db.delete(updates).where(eq(updates.parentId, updateId));
     await this.db.delete(updates).where(eq(updates.id, updateId));
@@ -362,23 +437,22 @@ export class ItemsService {
 
   // ------------------------------------------------------------ update helpers
 
-  private async updateInAccount(auth: AuthContext, updateId: string): Promise<void> {
+  private async updateInAccount(auth: AuthContext, updateId: string) {
     const [row] = await this.db
-      .select({ id: updates.id })
+      .select({ id: updates.id, authorUserId: updates.authorUserId, boardId: updates.boardId })
       .from(updates)
       .innerJoin(boards, eq(updates.boardId, boards.id))
-      .where(and(eq(updates.id, updateId), eq(boards.accountId, auth.accountId)))
+      .where(and(eq(updates.id, updateId), eq(boards.accountId, auth.accountId), this.boardAccess.visibleTo(auth)))
       .limit(1);
     if (!row) throw new NotFoundException('Update not found');
+    return row;
   }
 
-  private async hydratedUpdates(
-    auth: AuthContext,
-    where: ReturnType<typeof eq>,
-  ): Promise<UpdatePayload[]> {
+  private async hydratedUpdates(auth: AuthContext, where: SQL, options?: { includeReplies?: boolean }): Promise<UpdatePayload[]> {
     const rows = await this.db
       .select({
         id: updates.id,
+        body: updates.body,
         bodyText: updates.bodyText,
         createdAt: updates.createdAt,
         editedAt: updates.editedAt,
@@ -393,6 +467,7 @@ export class ItemsService {
       .orderBy(desc(updates.createdAt));
 
     const decorated = await this.decorate(auth, rows);
+    if (options?.includeReplies === false) return decorated;
     const byId = new Map(rows.map((r, index) => [r.id, decorated[index]]));
 
     // Thread replies under their parents; replies read oldest-first.
@@ -406,96 +481,130 @@ export class ItemsService {
     return parents;
   }
 
-  /** Attaches like counts and the caller's like/bookmark state. */
-  private async decorate(
-    auth: AuthContext,
-    rows: Array<{
-      id: string;
-      bodyText: string;
-      createdAt: Date;
-      editedAt: Date | null;
-      authorUserId: string;
-      authorName: string;
-      authorAvatar: string | null;
-    }>,
-  ): Promise<UpdatePayload[]> {
+  /** Attaches reactions, bookmark state and files to raw update rows. */
+  private async decorate(auth: AuthContext, rows: UpdateRow[]): Promise<UpdatePayload[]> {
     if (rows.length === 0) return [];
     const ids = rows.map((r) => r.id);
-
-    const [likeCounts, myLikes, myBookmarks] = await Promise.all([
-      this.db
-        .select({ updateId: updateLikes.updateId, n: count() })
-        .from(updateLikes)
-        .where(inArray(updateLikes.updateId, ids))
-        .groupBy(updateLikes.updateId),
-      this.db
-        .select({ updateId: updateLikes.updateId })
-        .from(updateLikes)
-        .where(and(inArray(updateLikes.updateId, ids), eq(updateLikes.userId, auth.userId))),
+    const [reactions, myBookmarks, filesByUpdate] = await Promise.all([
+      this.reactionSummary(auth, ids),
       this.db
         .select({ updateId: updateBookmarks.updateId })
         .from(updateBookmarks)
         .where(and(inArray(updateBookmarks.updateId, ids), eq(updateBookmarks.userId, auth.userId))),
+      this.files.listForUpdates(ids),
     ]);
-
-    const counts = new Map(likeCounts.map((l) => [l.updateId, Number(l.n)]));
-    const liked = new Set(myLikes.map((l) => l.updateId));
     const bookmarked = new Set(myBookmarks.map((b) => b.updateId));
 
-    return rows.map((r) => ({
-      id: r.id,
-      body: r.bodyText,
-      author: { userId: r.authorUserId, fullName: r.authorName, avatarUrl: r.authorAvatar },
-      createdAt: r.createdAt.toISOString(),
-      editedAt: r.editedAt?.toISOString() ?? null,
-      likesCount: counts.get(r.id) ?? 0,
-      likedByMe: liked.has(r.id),
-      bookmarkedByMe: bookmarked.has(r.id),
-      replies: [],
-    }));
+    return rows.map((r) => {
+      const doc = normalizeStoredDoc(r.body ?? r.bodyText);
+      const list = reactions.get(r.id) ?? [];
+      const thumbs = list.find((x) => x.emoji === LIKE_EMOJI);
+      return {
+        id: r.id,
+        body: r.bodyText,
+        markdown: serializeDoc(doc),
+        doc,
+        author: { userId: r.authorUserId, fullName: r.authorName, avatarUrl: r.authorAvatar },
+        createdAt: r.createdAt.toISOString(),
+        editedAt: r.editedAt?.toISOString() ?? null,
+        reactions: list,
+        likesCount: thumbs?.count ?? 0,
+        likedByMe: thumbs?.reactedByMe ?? false,
+        bookmarkedByMe: bookmarked.has(r.id),
+        files: filesByUpdate.get(r.id) ?? [],
+        replies: [],
+      };
+    });
   }
 
-  private async itemForWrite(auth: AuthContext, itemId: string) {
-    const [row] = await this.db
-      .select({ id: items.id, boardId: items.boardId, name: items.name })
-      .from(items)
-      .innerJoin(boards, eq(items.boardId, boards.id))
-      .where(and(eq(items.id, itemId), eq(boards.accountId, auth.accountId), isNull(items.archivedAt)))
-      .limit(1);
-    if (!row) throw new NotFoundException('Item not found');
-    if (auth.role === 'viewer' || auth.role === 'guest') {
-      throw new ForbiddenException('Your role cannot post updates');
+  private async reactionSummary(auth: AuthContext, updateIds: string[]): Promise<Map<string, ReactionPayload[]>> {
+    const rows = await this.db
+      .select({ updateId: updateReactions.updateId, emoji: updateReactions.emoji, userId: updateReactions.userId })
+      .from(updateReactions)
+      .where(inArray(updateReactions.updateId, updateIds))
+      .orderBy(asc(updateReactions.createdAt));
+    const out = new Map<string, ReactionPayload[]>();
+    for (const row of rows) {
+      const list = out.get(row.updateId) ?? [];
+      let entry = list.find((r) => r.emoji === row.emoji);
+      if (!entry) {
+        entry = { emoji: row.emoji, count: 0, reactedByMe: false };
+        list.push(entry);
+      }
+      entry.count += 1;
+      if (row.userId === auth.userId) entry.reactedByMe = true;
+      out.set(row.updateId, list);
     }
-    return row;
+    // Picker order keeps the pills stable between renders.
+    for (const list of out.values()) {
+      list.sort((a, b) => REACTION_EMOJIS.indexOf(a.emoji as never) - REACTION_EMOJIS.indexOf(b.emoji as never));
+    }
+    return out;
+  }
+
+  /** Keeps only ids that are active members of this account. */
+  private async activeMembers(auth: AuthContext, userIds: string[]): Promise<string[]> {
+    if (userIds.length === 0) return [];
+    const rows = await this.db
+      .select({ userId: accountMembers.userId })
+      .from(accountMembers)
+      .where(
+        and(eq(accountMembers.accountId, auth.accountId), eq(accountMembers.status, 'active'), inArray(accountMembers.userId, userIds)),
+      );
+    return rows.map((r) => r.userId);
+  }
+
+  /** "Everyone on this board": board members, plus every active non-guest member for main boards. */
+  private async boardAudience(auth: AuthContext, boardId: string): Promise<string[]> {
+    const [board] = await this.db.select({ type: boards.type }).from(boards).where(eq(boards.id, boardId)).limit(1);
+    const explicit = await this.db
+      .select({ userId: boardMembers.userId })
+      .from(boardMembers)
+      .innerJoin(
+        accountMembers,
+        and(eq(accountMembers.userId, boardMembers.userId), eq(accountMembers.accountId, auth.accountId)),
+      )
+      .where(and(eq(boardMembers.boardId, boardId), eq(accountMembers.status, 'active')));
+    const ids = new Set(explicit.map((r) => r.userId));
+    if (board?.type === 'main') {
+      const everyone = await this.db
+        .select({ userId: accountMembers.userId })
+        .from(accountMembers)
+        .where(and(eq(accountMembers.accountId, auth.accountId), eq(accountMembers.status, 'active'), ne(accountMembers.role, 'guest')));
+      for (const r of everyone) ids.add(r.userId);
+    }
+    return [...ids];
   }
 
   /**
-   * Finds `@Full Name` mentions in the body and maps them to account members.
-   * Longest names are matched first so "@Alex Smith" wins over "@Alex".
+   * Legacy plain-text mentions (`@Full Name`) for clients that don't emit
+   * mention tokens. Longest names are matched first so "@Alex Smith" wins
+   * over "@Alex".
    */
-  private async resolveMentions(auth: AuthContext, body: string): Promise<string[]> {
+  private async resolveLegacyMentions(auth: AuthContext, body: string): Promise<string[]> {
     if (!body.includes('@')) return [];
-
     const members = await this.db
       .select({ userId: accountMembers.userId, fullName: userProfiles.fullName })
       .from(accountMembers)
       .innerJoin(userProfiles, eq(accountMembers.userId, userProfiles.userId))
-      .where(eq(accountMembers.accountId, auth.accountId));
-
+      .where(and(eq(accountMembers.accountId, auth.accountId), eq(accountMembers.status, 'active')));
     const lowerBody = body.toLowerCase();
-    const matched = members
-      .filter((m) => m.fullName && lowerBody.includes(`@${m.fullName.toLowerCase()}`))
-      .sort((a, b) => b.fullName.length - a.fullName.length)
-      .map((m) => m.userId)
-      // Never notify yourself.
-      .filter((userId) => userId !== auth.userId);
-
-    return [...new Set(matched)];
+    return [
+      ...new Set(
+        members
+          .filter((m) => m.fullName && lowerBody.includes(`@${m.fullName.toLowerCase()}`))
+          .sort((a, b) => b.fullName.length - a.fullName.length)
+          .map((m) => m.userId)
+          .filter((userId) => userId !== auth.userId),
+      ),
+    ];
   }
 
+  // ------------------------------------------------------------------- My Work
+
   /**
-   * My Work: items assigned to the caller through any `people` column,
-   * grouped by due date relative to today.
+   * My Work: items (and subitems) assigned to the caller through any `people`
+   * column, grouped by due date relative to today.
    */
   async myWork(
     auth: AuthContext,
@@ -513,18 +622,13 @@ export class ItemsService {
       .select({ id: columns.id, boardId: columns.boardId })
       .from(columns)
       .innerJoin(boards, eq(columns.boardId, boards.id))
-      .where(and(eq(boards.accountId, auth.accountId), eq(columns.type, 'people'), isNull(boards.archivedAt)));
+      .where(and(eq(boards.accountId, auth.accountId), eq(columns.type, 'people'), boardIsLive(), this.boardAccess.visibleTo(auth)));
     if (peopleColumns.length === 0) return this.emptyMyWork();
 
     const assignments = await this.db
       .select({ itemId: columnValues.itemId, value: columnValues.value })
       .from(columnValues)
-      .where(
-        inArray(
-          columnValues.columnId,
-          peopleColumns.map((c) => c.id),
-        ),
-      );
+      .where(inArray(columnValues.columnId, peopleColumns.map((c) => c.id)));
 
     const myItemIds = assignments
       .filter((a) => {
@@ -538,6 +642,7 @@ export class ItemsService {
       .select({
         id: items.id,
         name: items.name,
+        parentItemId: items.parentItemId,
         boardId: boards.id,
         boardName: boards.name,
         groupTitle: groups.title,
@@ -546,28 +651,17 @@ export class ItemsService {
       .from(items)
       .innerJoin(boards, eq(items.boardId, boards.id))
       .innerJoin(groups, eq(items.groupId, groups.id))
-      .where(and(inArray(items.id, [...new Set(myItemIds)]), isNull(items.archivedAt)))
+      .where(and(inArray(items.id, [...new Set(myItemIds)]), itemIsLive()))
       .orderBy(asc(items.position));
+    if (rows.length === 0) return this.emptyMyWork();
 
-    const allValues = await this.db
-      .select()
-      .from(columnValues)
-      .where(
-        inArray(
-          columnValues.itemId,
-          rows.map((r) => r.id),
-        ),
-      );
-
-    const boardColumns = await this.db
-      .select({ id: columns.id, boardId: columns.boardId, type: columns.type, settings: columns.settings })
-      .from(columns)
-      .where(
-        inArray(
-          columns.boardId,
-          [...new Set(rows.map((r) => r.boardId))],
-        ),
-      );
+    const [allValues, boardColumns] = await Promise.all([
+      this.db.select().from(columnValues).where(inArray(columnValues.itemId, rows.map((r) => r.id))),
+      this.db
+        .select({ id: columns.id, boardId: columns.boardId, type: columns.type, scope: columns.scope, settings: columns.settings })
+        .from(columns)
+        .where(inArray(columns.boardId, [...new Set(rows.map((r) => r.boardId))])),
+    ]);
 
     const valuesByItem = new Map<string, Map<string, unknown>>();
     for (const v of allValues) {
@@ -583,19 +677,16 @@ export class ItemsService {
 
     for (const row of rows) {
       const values = valuesByItem.get(row.id) ?? new Map<string, unknown>();
-      const cols = boardColumns.filter((c) => c.boardId === row.boardId);
+      const scope = row.parentItemId ? 'subitems' : 'items';
+      const cols = boardColumns.filter((c) => c.boardId === row.boardId && c.scope === scope);
 
       const dateColumn = cols.find((c) => c.type === 'date');
-      const rawDate = dateColumn
-        ? (values.get(dateColumn.id) as { date?: string } | undefined)?.date
-        : undefined;
+      const rawDate = dateColumn ? (values.get(dateColumn.id) as { date?: string } | undefined)?.date : undefined;
 
       const statusColumn = cols.find((c) => c.type === 'status');
-      const statusValue = statusColumn
-        ? (values.get(statusColumn.id) as { labelId?: string } | undefined)
-        : undefined;
-      const labels = (statusColumn?.settings as { labels?: Array<{ id: string; label: string; color: string; isDone: boolean }> })
-        ?.labels ?? [];
+      const statusValue = statusColumn ? (values.get(statusColumn.id) as { labelId?: string } | undefined) : undefined;
+      const labels =
+        (statusColumn?.settings as { labels?: Array<{ id: string; label: string; color: string; isDone: boolean }> })?.labels ?? [];
       const label = labels.find((l) => l.id === statusValue?.labelId);
 
       const entry: MyWorkItem = {
@@ -605,6 +696,7 @@ export class ItemsService {
         boardName: row.boardName,
         groupTitle: row.groupTitle,
         groupColor: row.groupColor,
+        isSubitem: !!row.parentItemId,
         date: rawDate ?? null,
         status: label ? { label: label.label, color: label.color, isDone: label.isDone } : null,
       };
@@ -616,7 +708,6 @@ export class ItemsService {
         if (includeDone) buckets.done.push(entry);
         continue;
       }
-
       if (!rawDate) {
         buckets.noDate.push(entry);
         continue;
@@ -627,7 +718,6 @@ export class ItemsService {
       else if (due < weekEnd) buckets.thisWeek.push(entry);
       else buckets.later.push(entry);
     }
-
     return buckets;
   }
 
@@ -651,6 +741,7 @@ export interface MyWorkItem {
   boardName: string;
   groupTitle: string;
   groupColor: string;
+  isSubitem: boolean;
   date: string | null;
   status: { label: string; color: string; isDone: boolean } | null;
 }

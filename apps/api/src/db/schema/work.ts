@@ -1,7 +1,9 @@
 import {
+  type AnyPgColumn,
   boolean,
   doublePrecision,
   index,
+  integer,
   jsonb,
   pgTable,
   text,
@@ -9,7 +11,7 @@ import {
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
-import { boardRole, boardType, columnType, viewType } from './enums';
+import { boardRole, boardType, columnScope, columnType, viewType } from './enums';
 import { accounts } from './accounts';
 import { users } from './auth';
 
@@ -41,7 +43,9 @@ export const boards = pgTable(
     description: text('description'),
     type: boardType('type').notNull().default('main'),
     createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+    /** Archive keeps the board indefinitely; trash is purged 30 days after `trashedAt`. */
     archivedAt: timestamp('archived_at', { withTimezone: true }),
+    trashedAt: timestamp('trashed_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -126,12 +130,24 @@ export const items = pgTable(
       .references(() => groups.id, { onDelete: 'cascade' }),
     name: text('name').notNull(),
     position: doublePrecision('position').notNull(),
+    /** Set on subitems; they share their parent's board and group. One level only. */
+    parentItemId: uuid('parent_item_id').references((): AnyPgColumn => items.id, { onDelete: 'cascade' }),
+    /** Stable per-board sequence number, shown by the Item ID column. */
+    serial: integer('serial').notNull(),
     createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+    updatedByUserId: uuid('updated_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+    /** Archive keeps the item indefinitely; trash is purged 30 days after `trashedAt`. */
     archivedAt: timestamp('archived_at', { withTimezone: true }),
+    trashedAt: timestamp('trashed_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('items_board_idx').on(t.boardId), index('items_group_idx').on(t.groupId)],
+  (t) => [
+    index('items_board_idx').on(t.boardId),
+    index('items_group_idx').on(t.groupId),
+    index('items_parent_idx').on(t.parentItemId),
+    uniqueIndex('items_board_serial_uq').on(t.boardId, t.serial),
+  ],
 );
 
 export const columns = pgTable(
@@ -142,6 +158,8 @@ export const columns = pgTable(
       .notNull()
       .references(() => boards.id, { onDelete: 'cascade' }),
     type: columnType('type').notNull(),
+    /** Item-level columns vs. the board's subitem column set. */
+    scope: columnScope('scope').notNull().default('items'),
     title: text('title').notNull(),
     /** Type-specific configuration, e.g. status labels [{id,label,color,isDone}] for status columns. */
     settings: jsonb('settings').notNull().default({}),
@@ -185,6 +203,7 @@ export const boardViews = pgTable(
     position: doublePrecision('position').notNull(),
     createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index('board_views_board_idx').on(t.boardId)],
 );

@@ -20,6 +20,8 @@ export type BoardEvent =
   | { type: 'column.created'; boardId: string; column: unknown }
   | { type: 'column.updated'; boardId: string; columnId: string; patch: unknown }
   | { type: 'column.deleted'; boardId: string; columnId: string }
+  | { type: 'column.moved'; boardId: string; columnId: string }
+  | { type: 'views.changed'; boardId: string }
   | { type: 'board.updated'; boardId: string; patch: unknown };
 
 interface Client {
@@ -34,9 +36,11 @@ interface Client {
 /**
  * Board fan-out over a raw `ws` server mounted at `/v1/realtime`.
  *
- * The access token is passed as a query parameter because browsers cannot set
- * headers on a WebSocket handshake. Clients then send `{action:'subscribe',
- * boardId}` frames; the server pushes board events back.
+ * Authentication: the preferred flow connects without credentials and sends
+ * `{action:'auth', token}` as the first frame (keeps the JWT out of URLs and
+ * proxy/access logs); the server answers `{type:'ready'}`, after which
+ * `{action:'subscribe', boardId}` frames select boards. A `?token=` query
+ * parameter is still honored for older clients.
  *
  * Fan-out is in-process: with more than one API instance this needs a shared
  * bus (Redis pub/sub) so events reach clients on other nodes.
@@ -63,7 +67,16 @@ export class RealtimeGateway implements OnModuleDestroy {
       const { pathname, searchParams } = new URL(request.url ?? '/', 'http://localhost');
       if (pathname !== '/v1/realtime') return; // let other upgrade handlers try
 
-      void this.authenticate(searchParams.get('token')).then((auth) => {
+      const legacyToken = searchParams.get('token');
+      if (!legacyToken) {
+        // Preferred flow: upgrade first, authenticate via the first frame.
+        this.server!.handleUpgrade(request, socket, head, (ws) => {
+          this.awaitFirstFrameAuth(ws, request);
+        });
+        return;
+      }
+
+      void this.authenticate(legacyToken).then((auth) => {
         if (!auth) {
           socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
           socket.destroy();
@@ -130,6 +143,36 @@ export class RealtimeGateway implements OnModuleDestroy {
     } catch {
       return null;
     }
+  }
+
+  /** An un-credentialed connection gets one frame and five seconds to prove itself. */
+  private awaitFirstFrameAuth(socket: WebSocket, request: IncomingMessage): void {
+    const deadline = setTimeout(() => socket.close(4401, 'auth timeout'), 5_000);
+
+    socket.once('message', (raw) => {
+      clearTimeout(deadline);
+      let message: { action?: string; token?: string };
+      try {
+        message = JSON.parse(raw.toString()) as typeof message;
+      } catch {
+        socket.close(4401, 'unauthorized');
+        return;
+      }
+      if (message.action !== 'auth' || !message.token) {
+        socket.close(4401, 'unauthorized');
+        return;
+      }
+      void this.authenticate(message.token).then((auth) => {
+        if (!auth) {
+          socket.close(4401, 'unauthorized');
+          return;
+        }
+        if (socket.readyState !== WebSocket.OPEN) return;
+        this.register(socket, auth, request);
+      });
+    });
+
+    socket.once('close', () => clearTimeout(deadline));
   }
 
   private register(socket: WebSocket, auth: { userId: string; accountId: string }, request: IncomingMessage): void {

@@ -74,10 +74,11 @@ export const invitations = pgTable(
     invitedByUserId: uuid('invited_by_user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
-    token: text('token').notNull(),
+    /** SHA-256 of the invite token — the raw token exists only in the invite link. */
+    tokenHash: text('token_hash').notNull(),
     acceptedAt: timestamp('accepted_at', { withTimezone: true }),
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [uniqueIndex('invitations_token_uq').on(t.token), index('invitations_account_idx').on(t.accountId)],
+  (t) => [uniqueIndex('invitations_token_hash_uq').on(t.tokenHash), index('invitations_account_idx').on(t.accountId)],
 );

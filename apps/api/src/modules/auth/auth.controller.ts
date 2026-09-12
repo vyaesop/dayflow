@@ -40,6 +40,7 @@ export class AuthController {
 
   @Post('signup/complete')
   @HttpCode(201)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @ApiOperation({ summary: 'Create the user + account after OTP verification and the onboarding wizard' })
   completeSignup(@Body() dto: CompleteSignupDto, @Headers('user-agent') userAgent?: string) {
     return this.auth.completeSignup(dto, userAgent);
@@ -47,6 +48,7 @@ export class AuthController {
 
   @Post('login/select')
   @HttpCode(200)
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @ApiOperation({ summary: 'Choose an account to log in (after OTP verify for an existing user)' })
   selectAccount(@Body() dto: SelectAccountDto, @Headers('user-agent') userAgent?: string) {
     return this.auth.selectAccount(dto.selectToken, dto.accountId, userAgent);
@@ -62,6 +64,7 @@ export class AuthController {
 
   @Post('google')
   @HttpCode(200)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @ApiOperation({ summary: 'Log in / sign up with a Google ID token' })
   googleLogin(@Body() dto: GoogleLoginDto, @Headers('user-agent') userAgent?: string) {
     return this.auth.googleLogin(dto.idToken, userAgent);
@@ -69,6 +72,7 @@ export class AuthController {
 
   @Post('refresh')
   @HttpCode(200)
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @ApiOperation({ summary: 'Rotate the refresh token and mint a new access token' })
   refresh(@Body() dto: RefreshDto, @Headers('user-agent') userAgent?: string) {
     return this.auth.refresh(dto.refreshToken, userAgent);
@@ -96,6 +100,7 @@ export class AuthController {
 
   @Post('password/change')
   @HttpCode(204)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Change password (revokes all other sessions)' })

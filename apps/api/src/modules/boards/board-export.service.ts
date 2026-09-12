@@ -1,69 +1,98 @@
 import { Injectable } from '@nestjs/common';
 import type { AuthContext } from '../../common/auth-context';
+import { ViewsService } from '../views/views.service';
 import { BoardsService } from './boards.service';
+import { applyView, displayValue, visibleColumns, type QueryColumn, type QueryContext, type ViewConfig } from './view-query';
 
 /**
- * Board → CSV. One row per item, one column per board column, with the
- * group as the leading column. Values are flattened to display text the same
- * way the client renders chips.
+ * Board → CSV. One row per item (subitems indented under their parent), one
+ * column per visible board column, with the group as the leading column.
+ * Passing a view applies its filters, sort and hidden columns, so the export
+ * matches what the viewer sees.
  */
 @Injectable()
 export class BoardExportService {
-  constructor(private readonly boards: BoardsService) {}
+  constructor(
+    private readonly boards: BoardsService,
+    private readonly views: ViewsService,
+  ) {}
 
-  async toCsv(auth: AuthContext, boardId: string): Promise<{ fileName: string; csv: string }> {
+  async toCsv(auth: AuthContext, boardId: string, viewId?: string): Promise<{ fileName: string; csv: string }> {
     const board = await this.boards.getBoard(auth, boardId);
+    const config: ViewConfig = viewId ? await this.views.configFor(boardId, viewId) : {};
 
-    const header = ['Group', 'Item', ...board.columns.map((c) => c.title)];
+    const columns: QueryColumn[] = board.columns.map((c) => ({
+      id: c.id,
+      type: c.type,
+      title: c.title,
+      settings: c.settings,
+      position: c.position,
+      scope: c.scope,
+    }));
+    const ctx: QueryContext = {
+      userId: auth.userId,
+      now: new Date(),
+      memberNames: Object.fromEntries(board.members.map((m) => [m.userId, m.fullName])),
+    };
+
+    const itemColumns = visibleColumns(columns, config, 'items');
+    const subitemColumns = visibleColumns(columns, config, 'subitems');
+    const groups = applyView(
+      board.groups.map((g) => ({
+        id: g.id,
+        title: g.title,
+        position: g.position,
+        items: g.items.map((i) => ({
+          id: i.id,
+          name: i.name,
+          position: i.position,
+          values: i.values,
+          serial: i.serial,
+          createdAt: i.createdAt,
+          updatedAt: i.updatedAt,
+          groupId: g.id,
+        })),
+      })),
+      config,
+      columns,
+      ctx,
+    );
+    const subitemsByParent = new Map(board.groups.flatMap((g) => g.items).map((i) => [i.id, i.subitems]));
+
+    const header = ['Group', 'Item', ...itemColumns.map((c) => c.title)];
     const lines = [header.map(escapeCsv).join(',')];
-
-    for (const group of board.groups) {
+    for (const group of groups) {
       for (const item of group.items) {
-        const cells = board.columns.map((column) =>
-          flattenValue(column.type, column.settings, item.values[column.id]),
+        lines.push(
+          [group.title, item.name, ...itemColumns.map((column) => displayValue(column, item, ctx))].map(escapeCsv).join(','),
         );
-        lines.push([group.title, item.name, ...cells].map(escapeCsv).join(','));
+        for (const sub of subitemsByParent.get(item.id) ?? []) {
+          const subItem = {
+            id: sub.id,
+            name: sub.name,
+            position: sub.position,
+            values: sub.values,
+            serial: sub.serial,
+            createdAt: sub.createdAt,
+            updatedAt: sub.updatedAt,
+          };
+          // Subitems carry their own column set; they are written under the
+          // parent with their values flattened into one "Subitems" style cell
+          // per parent column slot so the CSV stays rectangular.
+          const detail = subitemColumns
+            .map((column) => {
+              const value = displayValue(column, subItem, ctx);
+              return value ? `${column.title}: ${value}` : '';
+            })
+            .filter(Boolean)
+            .join(' · ');
+          lines.push([group.title, `  ↳ ${sub.name}`, detail, ...itemColumns.slice(1).map(() => '')].map(escapeCsv).join(','));
+        }
       }
     }
 
     const safeName = board.name.replace(/[^\w\d-]+/g, '_').slice(0, 60) || 'board';
     return { fileName: `${safeName}.csv`, csv: lines.join('\r\n') };
-  }
-}
-
-function flattenValue(type: string, settings: unknown, raw: unknown): string {
-  if (raw === null || raw === undefined) return '';
-  const value = raw as Record<string, unknown>;
-
-  switch (type) {
-    case 'status': {
-      const labels = (settings as { labels?: Array<{ id: string; label: string }> })?.labels ?? [];
-      return labels.find((l) => l.id === value.labelId)?.label ?? '';
-    }
-    case 'people':
-      return Array.isArray(value.userIds) ? `${value.userIds.length} assigned` : '';
-    case 'date':
-      return [value.date, value.time].filter(Boolean).join(' ');
-    case 'timeline':
-      return value.from && value.to ? `${value.from} → ${value.to}` : '';
-    case 'text':
-      return String(value.text ?? '');
-    case 'number':
-      return value.number === undefined ? '' : String(value.number);
-    case 'checkbox':
-      return value.checked === true ? 'Yes' : '';
-    case 'link':
-      return String(value.url ?? '');
-    case 'location':
-      return String(value.address ?? '');
-    case 'tags':
-    case 'dropdown': {
-      const options = (settings as { options?: Array<{ id: string; label: string }> })?.options ?? [];
-      const ids = Array.isArray(value.optionIds) ? (value.optionIds as string[]) : [];
-      return ids.map((id) => options.find((o) => o.id === id)?.label ?? id).join('; ');
-    }
-    default:
-      return '';
   }
 }
 

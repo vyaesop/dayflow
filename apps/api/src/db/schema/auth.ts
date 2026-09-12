@@ -49,6 +49,18 @@ export const otpCodes = pgTable(
   (t) => [index('otp_codes_email_idx').on(t.email)],
 );
 
+/**
+ * Per-email OTP failure ledger. Lives outside `otp_codes` so requesting a new
+ * code cannot reset the attempt budget; too many wrong codes lock the email
+ * for a cool-down window regardless of how many codes were issued.
+ */
+export const otpThrottle = pgTable('otp_throttle', {
+  email: text('email').primaryKey(),
+  failedAttempts: integer('failed_attempts').notNull().default(0),
+  lockedUntil: timestamp('locked_until', { withTimezone: true }),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const refreshTokens = pgTable(
   'refresh_tokens',
   {

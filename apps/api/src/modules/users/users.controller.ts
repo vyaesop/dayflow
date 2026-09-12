@@ -1,13 +1,14 @@
-import { Body, Controller, Get, Patch, Post, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Patch, Post, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { IsBoolean, IsIn, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 import { CurrentAuth } from '../../common/current-auth.decorator';
 import { JwtAuthGuard } from '../../common/jwt-auth.guard';
 import type { AuthContext } from '../../common/auth-context';
 import { SessionService } from '../auth/session.service';
-import { FilesService } from '../files/files.service';
+import { FilesService, MAX_UPLOAD_BYTES } from '../files/files.service';
 import { UsersService } from './users.service';
 
 const PERSONAL_STATUSES = [
@@ -99,12 +100,13 @@ export class UsersController {
   }
 
   @Post('avatar')
-  @UseInterceptors(FileInterceptor('file'))
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 } }))
   @ApiConsumes('multipart/form-data')
   @ApiBody({ schema: { type: 'object', properties: { file: { type: 'string', format: 'binary' } } } })
   @ApiOperation({ summary: 'Upload a profile photo' })
   async avatar(@CurrentAuth() auth: AuthContext, @UploadedFile() file: Express.Multer.File) {
-    const stored = await this.files.upload(auth, file, {});
+    const stored = await this.files.upload(auth, file, {}, { imageOnly: true });
     await this.users.setAvatarUrl(auth.userId, stored.url);
     return this.sessions.buildMe(auth.userId, auth.accountId);
   }
@@ -122,11 +124,14 @@ export class UsersController {
   }
 
   @Post('feedback')
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @ApiOperation({ summary: 'Send product feedback' })
-  feedback(@CurrentAuth() auth: AuthContext, @Body() dto: FeedbackDto) {
-    // No feedback back office exists yet — surface it in the server log so it
-    // is at least visible during development.
-    console.log(`[feedback] user=${auth.userId} account=${auth.accountId}: ${dto.message}`);
+  async feedback(
+    @CurrentAuth() auth: AuthContext,
+    @Body() dto: FeedbackDto,
+    @Headers('user-agent') userAgent?: string,
+  ) {
+    await this.users.saveFeedback(auth, dto.message, userAgent);
     return { ok: true };
   }
 }

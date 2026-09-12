@@ -1,6 +1,6 @@
 import { index, integer, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import { activityEvent } from './enums';
-import { boards, items } from './work';
+import { boards, columns, items } from './work';
 import { users } from './auth';
 
 /**
@@ -30,8 +30,9 @@ export const updates = pgTable(
   (t) => [index('updates_item_idx').on(t.itemId), index('updates_board_idx').on(t.boardId)],
 );
 
-export const updateLikes = pgTable(
-  'update_likes',
+/** Emoji reactions on updates; a 👍 reaction is what the legacy "like" maps to. */
+export const updateReactions = pgTable(
+  'update_reactions',
   {
     id: uuid('id').primaryKey().defaultRandom(),
     updateId: uuid('update_id')
@@ -40,9 +41,13 @@ export const updateLikes = pgTable(
     userId: uuid('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
+    emoji: text('emoji').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [uniqueIndex('update_likes_uq').on(t.updateId, t.userId)],
+  (t) => [
+    uniqueIndex('update_reactions_uq').on(t.updateId, t.userId, t.emoji),
+    index('update_reactions_update_idx').on(t.updateId),
+  ],
 );
 
 export const updateBookmarks = pgTable(
@@ -67,6 +72,8 @@ export const files = pgTable(
     boardId: uuid('board_id').references(() => boards.id, { onDelete: 'cascade' }),
     itemId: uuid('item_id').references(() => items.id, { onDelete: 'cascade' }),
     updateId: uuid('update_id').references(() => updates.id, { onDelete: 'cascade' }),
+    /** Set when the file lives in a Files column cell (the cell's fileIds mirror it). */
+    columnId: uuid('column_id').references(() => columns.id, { onDelete: 'set null' }),
     uploadedByUserId: uuid('uploaded_by_user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
@@ -91,7 +98,13 @@ export const activityLog = pgTable(
     event: activityEvent('event').notNull(),
     /** Event payload, e.g. {columnId, from, to} for column_value_changed. */
     payload: jsonb('payload').notNull().default({}),
+    /** Stamped when the entry was reverted through the 7-day undo. */
+    undoneAt: timestamp('undone_at', { withTimezone: true }),
+    undoneByUserId: uuid('undone_by_user_id').references(() => users.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('activity_log_board_idx').on(t.boardId), index('activity_log_item_idx').on(t.itemId)],
+  (t) => [
+    index('activity_log_board_idx').on(t.boardId, t.createdAt),
+    index('activity_log_item_idx').on(t.itemId),
+  ],
 );

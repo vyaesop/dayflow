@@ -1,38 +1,19 @@
 import 'reflect-metadata';
-import { ValidationPipe } from '@nestjs/common';
+import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
-import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
-import helmet from 'helmet';
 import { writeFileSync } from 'node:fs';
 import type { Server as HttpServer } from 'node:http';
 import { join } from 'node:path';
 import { AppModule } from './app.module';
+import { configureApp } from './app-setup';
 import { RealtimeGateway } from './modules/realtime/realtime.gateway';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule);
-
-  app.use(helmet());
-  app.setGlobalPrefix('v1');
-  app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
+  const document = configureApp(app);
   app.enableShutdownHooks();
 
-  const corsOrigins = (process.env.CORS_ORIGINS ?? '')
-    .split(',')
-    .map((o) => o.trim())
-    .filter(Boolean);
-  app.enableCors({ origin: corsOrigins.length ? corsOrigins : true });
-
-  const swaggerConfig = new DocumentBuilder()
-    .setTitle('Dayflow API')
-    .setDescription('Work management platform — boards, items, collaboration.')
-    .setVersion('0.1.0')
-    .addBearerAuth()
-    .build();
-  const document = SwaggerModule.createDocument(app, swaggerConfig);
-  SwaggerModule.setup('docs', app, document);
-
-  if (process.env.NODE_ENV !== 'production') {
+  if (document) {
     try {
       const contractsDir = join(__dirname, '..', '..', '..', 'packages', 'contracts');
       writeFileSync(join(contractsDir, 'openapi.json'), JSON.stringify(document, null, 2));
@@ -48,7 +29,9 @@ async function bootstrap(): Promise<void> {
   // listen() has created it.
   app.get(RealtimeGateway).attach(app.getHttpServer() as HttpServer);
 
-  console.log(`Dayflow API ready on http://localhost:${port} (docs at /docs)`);
+  new Logger('Bootstrap').log(
+    `Dayflow API ready on http://localhost:${port}${document ? ' (docs at /docs)' : ''}`,
+  );
 }
 
 void bootstrap();

@@ -6,7 +6,7 @@ import { JwtAuthGuard } from '../../common/jwt-auth.guard';
 import type { AuthContext } from '../../common/auth-context';
 import { MembersService } from './members.service';
 
-const ASSIGNABLE_ROLES = ['admin', 'member', 'viewer'] as const;
+const ASSIGNABLE_ROLES = ['admin', 'member', 'viewer', 'guest'] as const;
 
 export class InviteMemberDto {
   @ApiProperty({ example: 'teammate@acme.com' })
@@ -78,5 +78,17 @@ export class MembersController {
   @ApiOperation({ summary: 'Remove a member from the account (admins only)' })
   remove(@CurrentAuth() auth: AuthContext, @Param('userId', ParseUUIDPipe) userId: string) {
     return this.members.remove(auth, userId);
+  }
+
+  @Post('members/:userId/deactivate')
+  @ApiOperation({ summary: 'Deactivate a member: keeps their data, blocks their access (admins only)' })
+  deactivate(@CurrentAuth() auth: AuthContext, @Param('userId', ParseUUIDPipe) userId: string) {
+    return this.members.setStatus(auth, userId, 'deactivated');
+  }
+
+  @Post('members/:userId/reactivate')
+  @ApiOperation({ summary: 'Reactivate a deactivated member (admins only)' })
+  reactivate(@CurrentAuth() auth: AuthContext, @Param('userId', ParseUUIDPipe) userId: string) {
+    return this.members.setStatus(auth, userId, 'active');
   }
 }

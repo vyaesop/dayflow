@@ -8,11 +8,13 @@ export class MailService {
   private readonly logger = new Logger(MailService.name);
   private readonly resend: Resend | null;
   private readonly from: string;
+  private readonly production: boolean;
 
   constructor(config: ConfigService<Env, true>) {
     const key = config.get('RESEND_API_KEY', { infer: true });
     this.resend = key ? new Resend(key) : null;
     this.from = config.get('MAIL_FROM', { infer: true });
+    this.production = config.get('NODE_ENV', { infer: true }) === 'production';
   }
 
   async sendOtpEmail(to: string, code: string, purpose: 'signup' | 'login'): Promise<void> {
@@ -35,8 +37,25 @@ export class MailService {
     await this.send(to, subject, html, `${inviterName} invited you to ${accountName} on Dayflow: ${link}`);
   }
 
+  /** Generic one-liner for in-app notification events (mentions, assignments, replies). */
+  async sendNotificationEmail(to: string, subject: string, line: string): Promise<void> {
+    const html = `
+      ${this.header()}
+      <p style="font-size:15px;color:#1B1D29;line-height:1.6;margin:0 0 24px">${escapeHtml(line)}</p>
+      <p style="font-size:13px;color:#9CA0AF;line-height:1.6;margin:0">Open Dayflow on your phone to see the details.
+        You can turn these emails off under Settings &rarr; Notifications.</p>
+      ${this.footer()}`;
+    await this.send(to, subject, html, `${line} — open Dayflow to see the details.`);
+  }
+
   private async send(to: string, subject: string, html: string, text: string): Promise<void> {
     if (!this.resend) {
+      // Never no-op silently in production: the env schema requires the key
+      // there, but if this is ever reached, failing beats "sent" lies.
+      if (this.production) {
+        this.logger.error(`Email not configured — dropping mail to ${to}`);
+        throw new Error('Email delivery is not configured');
+      }
       this.logger.log(`[dev mail] to=${to} subject="${subject}"`);
       return;
     }

@@ -58,4 +58,36 @@ describe('validateEnv', () => {
   it('reports every problem at once', () => {
     expect(() => validateEnv({})).toThrow(/DATABASE_URL[\s\S]*JWT_SECRET/);
   });
+
+  it('normalizes PUBLIC_BASE_URL and rejects non-urls', () => {
+    expect(validateEnv({ ...minimal, PUBLIC_BASE_URL: 'https://api.dayflow.app/' }).PUBLIC_BASE_URL).toBe(
+      'https://api.dayflow.app',
+    );
+    expect(() => validateEnv({ ...minimal, PUBLIC_BASE_URL: 'not a url' })).toThrow(/PUBLIC_BASE_URL/);
+  });
+
+  describe('production hardening', () => {
+    const production = {
+      ...minimal,
+      NODE_ENV: 'production',
+      JWT_SECRET: 'a-32char-or-longer-production-secret!',
+      RESEND_API_KEY: 're_123',
+    };
+
+    it('accepts a fully configured production environment', () => {
+      expect(validateEnv(production).NODE_ENV).toBe('production');
+    });
+
+    it('requires RESEND_API_KEY so email never silently no-ops', () => {
+      expect(() => validateEnv({ ...production, RESEND_API_KEY: undefined })).toThrow(/RESEND_API_KEY/);
+    });
+
+    it('requires a 32+ char JWT secret', () => {
+      expect(() => validateEnv({ ...production, JWT_SECRET: 'only-twenty-chars-xx' })).toThrow(/JWT_SECRET/);
+    });
+
+    it('does not impose production requirements on development', () => {
+      expect(() => validateEnv(minimal)).not.toThrow();
+    });
+  });
 });

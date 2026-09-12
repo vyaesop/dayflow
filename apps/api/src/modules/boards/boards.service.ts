@@ -1,20 +1,38 @@
 import { Inject, Injectable, NotFoundException } from '@nestjs/common';
-import { and, asc, count, desc, eq, inArray, isNull } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray } from 'drizzle-orm';
 import { Database, DRIZZLE } from '../../db/db.module';
+import { boardIsLive, itemIsLive } from '../../db/live';
 import {
   boardFavorites,
   boardMembers,
   boards,
+  boardViews,
   columns,
   columnValues,
-  groups,
   items,
   recentVisits,
   updates,
   userProfiles,
   workspaces,
+  groups,
 } from '../../db/schema';
 import type { AuthContext } from '../../common/auth-context';
+import { BoardAccessService } from '../access/board-access.service';
+import { BoardContextService } from '../access/board-context.service';
+import { presentColumn, presentGroup, presentItem, type ColumnPayload, type GroupPayload } from './presenters';
+
+export interface ViewPayload {
+  id: string;
+  boardId: string;
+  type: string;
+  name: string;
+  isDefault: boolean;
+  position: number;
+  config: Record<string, unknown>;
+  createdByUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
 
 export interface BoardPayload {
   id: string;
@@ -23,27 +41,35 @@ export interface BoardPayload {
   type: string;
   workspace: { id: string; name: string };
   isFavorite: boolean;
-  columns: Array<{ id: string; type: string; title: string; settings: unknown; position: number; width: number | null }>;
-  groups: Array<{
-    id: string;
-    title: string;
-    color: string;
-    position: number;
-    collapsed: boolean;
-    items: Array<{
-      id: string;
-      name: string;
-      position: number;
-      updatesCount: number;
-      values: Record<string, unknown>;
-    }>;
-  }>;
+  columns: ColumnPayload[];
+  groups: GroupPayload[];
   members: Array<{ userId: string; fullName: string; avatarUrl: string | null; role: string }>;
+  views: ViewPayload[];
+  me: { userId: string; canEdit: boolean; canManage: boolean };
+}
+
+export function presentView(view: typeof boardViews.$inferSelect): ViewPayload {
+  return {
+    id: view.id,
+    boardId: view.boardId,
+    type: view.type,
+    name: view.name,
+    isDefault: view.isDefault,
+    position: view.position,
+    config: (view.config ?? {}) as Record<string, unknown>,
+    createdByUserId: view.createdByUserId,
+    createdAt: view.createdAt.toISOString(),
+    updatedAt: view.updatedAt.toISOString(),
+  };
 }
 
 @Injectable()
 export class BoardsService {
-  constructor(@Inject(DRIZZLE) private readonly db: Database) {}
+  constructor(
+    @Inject(DRIZZLE) private readonly db: Database,
+    private readonly boardAccess: BoardAccessService,
+    private readonly ctx: BoardContextService,
+  ) {}
 
   async getBoard(auth: AuthContext, boardId: string): Promise<BoardPayload> {
     const [board] = await this.db
@@ -57,17 +83,17 @@ export class BoardsService {
       })
       .from(boards)
       .innerJoin(workspaces, eq(boards.workspaceId, workspaces.id))
-      .where(and(eq(boards.id, boardId), eq(boards.accountId, auth.accountId), isNull(boards.archivedAt)))
+      .where(and(eq(boards.id, boardId), eq(boards.accountId, auth.accountId), boardIsLive(), this.boardAccess.visibleTo(auth)))
       .limit(1);
     if (!board) throw new NotFoundException('Board not found');
 
-    const [cols, groupRows, itemRows, memberRows, favorite] = await Promise.all([
+    const [cols, groupRows, itemRows, memberRows, favorite, viewRows, canEdit, canManage] = await Promise.all([
       this.db.select().from(columns).where(eq(columns.boardId, boardId)).orderBy(asc(columns.position)),
       this.db.select().from(groups).where(eq(groups.boardId, boardId)).orderBy(asc(groups.position)),
       this.db
         .select()
         .from(items)
-        .where(and(eq(items.boardId, boardId), isNull(items.archivedAt)))
+        .where(and(eq(items.boardId, boardId), itemIsLive()))
         .orderBy(asc(items.position)),
       this.db
         .select({
@@ -84,13 +110,14 @@ export class BoardsService {
         .from(boardFavorites)
         .where(and(eq(boardFavorites.boardId, boardId), eq(boardFavorites.userId, auth.userId)))
         .limit(1),
+      this.db.select().from(boardViews).where(eq(boardViews.boardId, boardId)).orderBy(asc(boardViews.position)),
+      this.ctx.canEdit(auth, boardId),
+      this.ctx.isBoardManager(auth, boardId),
     ]);
 
     const itemIds = itemRows.map((i) => i.id);
     const [valueRows, updateCounts] = await Promise.all([
-      itemIds.length
-        ? this.db.select().from(columnValues).where(inArray(columnValues.itemId, itemIds))
-        : Promise.resolve([]),
+      itemIds.length ? this.db.select().from(columnValues).where(inArray(columnValues.itemId, itemIds)) : Promise.resolve([]),
       itemIds.length
         ? this.db
             .select({ itemId: updates.itemId, n: count() })
@@ -107,9 +134,24 @@ export class BoardsService {
       valuesByItem.set(v.itemId, bag);
     }
     const updatesByItem = new Map<string, number>();
-    for (const u of updateCounts) {
-      if (u.itemId) updatesByItem.set(u.itemId, Number(u.n));
+    for (const u of updateCounts) if (u.itemId) updatesByItem.set(u.itemId, Number(u.n));
+
+    // Subitems nest under their parent; an orphaned subitem (parent archived
+    // separately) is simply not shown.
+    const subitemsByParent = new Map<string, typeof itemRows>();
+    for (const row of itemRows) {
+      if (!row.parentItemId) continue;
+      const list = subitemsByParent.get(row.parentItemId) ?? [];
+      list.push(row);
+      subitemsByParent.set(row.parentItemId, list);
     }
+    const present = (row: (typeof itemRows)[number]) =>
+      presentItem(
+        row,
+        valuesByItem.get(row.id) ?? {},
+        updatesByItem.get(row.id) ?? 0,
+        (subitemsByParent.get(row.id) ?? []).map((s) => presentItem(s, valuesByItem.get(s.id) ?? {}, updatesByItem.get(s.id) ?? 0)),
+      );
 
     return {
       id: board.id,
@@ -118,47 +160,29 @@ export class BoardsService {
       type: board.type,
       workspace: { id: board.workspaceId, name: board.workspaceName },
       isFavorite: favorite.length > 0,
-      columns: cols.map((c) => ({
-        id: c.id,
-        type: c.type,
-        title: c.title,
-        settings: c.settings,
-        position: c.position,
-        width: c.width,
-      })),
-      groups: groupRows.map((g) => ({
-        id: g.id,
-        title: g.title,
-        color: g.color,
-        position: g.position,
-        collapsed: g.collapsed,
-        items: itemRows
-          .filter((i) => i.groupId === g.id)
-          .map((i) => ({
-            id: i.id,
-            name: i.name,
-            position: i.position,
-            updatesCount: updatesByItem.get(i.id) ?? 0,
-            values: valuesByItem.get(i.id) ?? {},
-          })),
-      })),
+      columns: cols.map(presentColumn),
+      groups: groupRows.map((g) =>
+        presentGroup(
+          g,
+          itemRows.filter((i) => i.groupId === g.id && !i.parentItemId).map(present),
+        ),
+      ),
       members: memberRows,
+      views: viewRows.map(presentView),
+      me: { userId: auth.userId, canEdit, canManage },
     };
   }
 
   async visit(auth: AuthContext, boardId: string): Promise<void> {
-    await this.assertBoardInAccount(auth, boardId);
+    await this.ctx.visibleBoard(auth, boardId);
     await this.db
       .insert(recentVisits)
       .values({ boardId, userId: auth.userId })
-      .onConflictDoUpdate({
-        target: [recentVisits.boardId, recentVisits.userId],
-        set: { visitedAt: new Date() },
-      });
+      .onConflictDoUpdate({ target: [recentVisits.boardId, recentVisits.userId], set: { visitedAt: new Date() } });
   }
 
   async toggleFavorite(auth: AuthContext, boardId: string): Promise<{ isFavorite: boolean }> {
-    await this.assertBoardInAccount(auth, boardId);
+    await this.ctx.visibleBoard(auth, boardId);
     const [existing] = await this.db
       .select({ id: boardFavorites.id })
       .from(boardFavorites)
@@ -183,10 +207,11 @@ export class BoardsService {
         id: boards.id,
         name: boards.name,
         workspaceId: boards.workspaceId,
+        type: boards.type,
         updatedAt: boards.updatedAt,
       })
       .from(boards)
-      .where(and(eq(boards.accountId, auth.accountId), isNull(boards.archivedAt)))
+      .where(and(eq(boards.accountId, auth.accountId), boardIsLive(), this.boardAccess.visibleTo(auth)))
       .orderBy(desc(boards.updatedAt));
     const favRows = await this.db
       .select({ boardId: boardFavorites.boardId })
@@ -202,18 +227,10 @@ export class BoardsService {
         .map((b) => ({
           id: b.id,
           name: b.name,
+          type: b.type,
           updatedAt: b.updatedAt.toISOString(),
           isFavorite: favs.has(b.id),
         })),
     }));
-  }
-
-  private async assertBoardInAccount(auth: AuthContext, boardId: string): Promise<void> {
-    const [board] = await this.db
-      .select({ id: boards.id })
-      .from(boards)
-      .where(and(eq(boards.id, boardId), eq(boards.accountId, auth.accountId)))
-      .limit(1);
-    if (!board) throw new NotFoundException('Board not found');
   }
 }
