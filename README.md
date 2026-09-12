@@ -50,8 +50,11 @@ npm run api:dev               # http://localhost:4000, Swagger at /docs
 
 In development the OTP endpoints echo the verification code back as `devCode`
 (and log it), so you can complete signup without a configured mail provider.
-Set `SMTP_*` in `apps/api/.env` to send real email; `devCode` is suppressed when
-`NODE_ENV=production`.
+Set `RESEND_API_KEY` in `apps/api/.env` to send real email; `devCode` is
+suppressed when `NODE_ENV=production`, and production refuses to boot without a
+mail key so email can never silently no-op. Set `PUBLIC_BASE_URL` to the API's
+public https origin so invite emails link to the hosted landing page
+(`/invite/<token>`) instead of a raw deep link.
 
 **3. Client**
 
@@ -89,24 +92,47 @@ flutter run --dart-define=API_BASE_URL=https://api.example.com
 - Visit tracking feeding "recently visited"
 
 **Boards**
-- Editable table view: create/rename/duplicate/delete items, inline "add item"
-- Typed cell editors for status, people, date, text, number, checkbox, link,
-  timeline, location, dropdown and tags — validated server-side per column type
+- Editable table view: create/rename/duplicate/archive/delete items, inline "add item"
+- 21 column types — status, people, date, timeline, text, long text, number
+  (unit, decimals, summary mode), checkbox, dropdown, tags, link, email, phone,
+  location, files, rating, vote, plus the read-only Item ID, Creation log,
+  Last updated and Auto number — every value validated server-side per type
+- Subitems (one level) with their own column set, nested under the parent row
+  with a "N subitems · M done" roll-up; parents carry their subitems through
+  duplicate, move, archive and restore
+- Saved views per board: named Table / Kanban / Calendar / Dashboard views that
+  store filters, multi-column sort, hidden and reordered columns and
+  conditional colours; one default view; a shared TS/Dart filter engine keeps
+  the CSV export and the app in agreement
+- Advanced filter builder ("Where column · condition · value", And/Or, date
+  presets, dynamic "Me"), sort sheet, column visibility/reorder sheet and
+  conditional colouring (cell or row) on top of Quick Find and quick filters
+- Column summary footers per group: sums/averages, rating averages, status
+  batteries, checkbox counts, people counts, date ranges
 - Groups: add, rename, recolor, collapse, reorder, delete (never the last one)
-- Columns: add, rename, delete, and edit the choices of status/dropdown/tags
-  columns (labels, colours, which label counts as done)
+- Batch actions: select many items and set status, assign, move, duplicate,
+  archive or delete them in one transactional request
+- Archive (indefinite) and Trash (purged after 30 days) for boards and items,
+  with an Archive & trash screen to restore or delete permanently
+- Move an item to another board with a column-mapping preview (same-named
+  columns keep their values, the rest is listed as lost); duplicate a board
+  (structure / items / items + updates); save a board as an account template
 - Drag items to reorder within a group, or move them between groups; fractional
   positions so a reorder writes one row instead of renumbering the list
 - Kanban view with drag-and-drop between status lanes
-- Board creation from six templates (task management, content calendar,
-  client projects, event management, requests & approvals, blank)
+- Board creation from six built-in templates plus the account's own
 - Optimistic editing throughout: the UI updates first and rolls back if the
   server rejects the change
 
 **Items**
-- Item card with the design's Columns / Updates / Files tabs
-- Updates: threaded replies (one level), likes, bookmarks, edit and delete;
-  `@Full Name` mentions notify account members, replies notify the parent author
+- Item card with Columns / Updates / Files / Subitems tabs
+- Updates: rich text (bold, italic, strike, code, links, lists), threaded
+  replies (one level), emoji reactions, bookmarks, inline image and file
+  attachments, edit and delete; `@` mention autocomplete notifies account
+  members or "Everyone on this board", replies notify the parent author
+- Board discussion: an update thread on the board itself
+- Board activity log with filters, keyset pagination and a 7-day undo for
+  value changes, renames, moves and archives
 - Files: upload attachments (15MB cap, local-disk storage in dev), image
   previews, delete; served via unguessable-id URLs so image widgets can load
   them without a bearer token (production would swap in presigned R2/S3 URLs)
@@ -189,35 +215,59 @@ affected tests report themselves as skipped.
 
 ## Not built yet
 
-Calendar and timeline views, dashboards, file attachments, threaded replies on
-updates, rich-text update bodies, automations, and account-authored custom
-templates (the `templates` table is reserved for these; the shipped catalog
-lives in `templates.catalog.ts`).
+Automations, timeline/Gantt views, dependencies, mirror/formula columns and
+time tracking. See `MONDAY_FEATURE_GAP.md` for the full comparison and the
+remaining backlog.
 
 Also outstanding:
 
-- **Push delivery.** Notification prefs exist and are editable, but
-  `device_tokens` is unused and nothing is delivered via FCM/APNs; email
-  notifications likewise need a digest job.
-- **Deep links.** Invitations are emailed as `dayflow://invite/<token>` but no
-  URL scheme is registered, so invitees paste the link via
-  More → "Accept an invitation". Admins can copy a pending invite's link from
-  the members screen while no mail provider is configured.
-- **Board-level membership.** `board_members` exists and is populated for board
-  creators, but access is account-wide today: every member can open every board
-  in the account, and `private` / `shareable` board types are not enforced.
+- **Push delivery.** Notification prefs exist and email delivery works
+  (mentions, assignments, replies respect the email toggle), but
+  `device_tokens` is unused and nothing is delivered via FCM/APNs — that needs
+  a Firebase project.
 - **Realtime scale-out.** Fan-out is in-process, so more than one API instance
-  needs a shared bus (Redis pub/sub) before events reach clients on other nodes.
+  needs a shared bus (Redis pub/sub) before events reach clients on other
+  nodes. Clients fall back to polling (25s) with a visible notice whenever the
+  socket cannot connect — e.g. on a serverless host.
 - **Production file storage.** Attachments live on local disk and are served by
-  unguessable id; production needs R2/S3 with presigned URLs.
-- **Dashboard view, saved views, advanced filter builder.** Table/Kanban/
-  Calendar and quick filters exist; widget dashboards and the
-  "Where {column} {condition} {value}" builder do not.
+  unguessable id (only allowlisted image types render inline; everything else
+  downloads as an opaque attachment). Production wants R2/S3 with presigned
+  URLs.
 - **List view.** The mobile table already renders as a list; a distinct
-  condensed list view was skipped.
-- **Group reorder in the UI.** `POST /groups/:id/move` exists; the app reorders
-  items by drag but groups only via the API.
-- **Google and Apple sign-in.** Buttons show a "coming soon" toast; the API has
-  `POST /v1/auth/google` and needs a client ID.
-- **Coach-marks tour, i18n, subitems, automations, workdocs, audio notes,
-  document scan.** Not started (several are deferred to v1.1 in the plan).
+  condensed list view was skipped (a `list` view type is accepted and renders
+  as the table).
+- **Google and Apple sign-in.** The mobile buttons show a "coming soon" toast
+  until OAuth client IDs exist; the API's `POST /v1/auth/google` verifies the
+  token audience and is ready once `GOOGLE_CLIENT_ID` is set.
+- **Crash reporting.** No Sentry/Crashlytics — needs an account/DSN.
+- **Release packaging.** Android still signs with the debug keystore and both
+  platforms ship the stock Flutter launcher icon; a keystore, icon set, and
+  splash art are needed before a store submission.
+- **Coach-marks tour, i18n, automations, workdocs, audio notes, document
+  scan.** Not started (several are deferred to v1.1 in the plan).
+
+Recently closed out (all verified by the e2e suite or manual probes): invite
+deep links (`dayflow:///invite/<token>` registered on both platforms, hosted
+landing page at `GET /invite/<token>`, hashed tokens at rest, pending-invite
+hand-off through signup), the full board-type model end to end (see below),
+the widget Dashboard view, notification emails, the support center, product
+feedback persistence, the 30-day account-deletion grace flow, a `/healthz`
+endpoint, request logging + global error shaping, OTP lockouts that survive
+code re-issue, transactional refresh rotation, WS auth via first frame, and
+scheduled cleanup jobs for expired tokens/OTPs/invitations.
+
+## Board types
+
+Boards follow the monday.com model. `main` boards are visible to every account
+member; `private` and `shareable` boards are visible only to their board
+members (plus account admins, so boards stay reachable when owners leave);
+guests only ever see boards they were explicitly added to, and may only be
+added to `shareable` ones. Every board has members with a role — `owner`
+(manages members, settings, and the board type; the creator is the first
+owner, and a board always keeps at least one), `member` (edits), and `viewer`
+(read-only on that board). Ownership is limited to account admins/members.
+Endpoints: `GET/POST /boards/:id/members`, `PATCH/DELETE
+/boards/:id/members/:userId`, and `PATCH /boards/:id` with `{type}`. In the
+app: the privacy picker on New Board, the Board members sheet (⋮ menu), and
+Change board type for owners; restricted boards show a lock/link badge in
+lists. Being added to a board notifies you in-app and by email.
